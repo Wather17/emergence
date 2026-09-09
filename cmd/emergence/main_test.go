@@ -124,3 +124,32 @@ func TestRotatePasswordPromptsAndPublishes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBackupAndRestoreCommands(t *testing.T) {
+	root := t.TempDir()
+	if err := vault.Init(root, "Morning Pages", "backup password"); err != nil {
+		t.Fatal(err)
+	}
+	backup := root + "-bundle.age"
+	t.Chdir(root)
+	if err := run([]string{"backup", "--output", backup}, &bytes.Buffer{}, func(string) (string, error) {
+		return "backup password", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	destination := t.TempDir()
+	t.Chdir(destination)
+	if err := run([]string{"restore", "--input", backup}, &bytes.Buffer{}, func(string) (string, error) {
+		return "backup password", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if err := v.ValidatePassword("backup password"); err != nil {
+		t.Fatal(err)
+	}
+}

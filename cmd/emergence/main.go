@@ -23,6 +23,8 @@ Uso:
   emergence unlock
   emergence lock
   emergence rotate-password
+  emergence backup --output <arquivo>
+  emergence restore --input <arquivo>
   emergence status
   emergence doctor [--check-archive]
   emergence inbox
@@ -104,7 +106,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return nil
 	}
 	command := args[0]
-	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "destroy" {
+	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "backup" && command != "restore" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "destroy" {
 		return fmt.Errorf("comando desconhecido: %s; use emergence help", command)
 	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -114,8 +116,16 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		fs.StringVar(&folder, "folder", folder, "nome da pasta privada")
 	}
 	checkArchive := false
+	output := ""
+	input := ""
 	if command == "doctor" {
 		fs.BoolVar(&checkArchive, "check-archive", false, "autenticar e validar integralmente sealed.age")
+	}
+	if command == "backup" {
+		fs.StringVar(&output, "output", "", "arquivo de saída do backup criptografado")
+	}
+	if command == "restore" {
+		fs.StringVar(&input, "input", "", "arquivo de backup criptografado")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -194,11 +204,39 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		}
 		return nil
 	}
+	if command == "restore" {
+		if input == "" {
+			return errors.New("informe um arquivo de entrada com --input")
+		}
+		p, err := ask("Senha do backup: ")
+		if err != nil {
+			return err
+		}
+		if err := vault.Restore(cwd, input, p); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "Vault restaurada e trancada.")
+		return nil
+	}
 	v, err := vault.Open(cwd)
 	if err != nil {
 		return err
 	}
 	defer v.Close()
+	if command == "backup" {
+		if output == "" {
+			return errors.New("informe um arquivo de saída com --output")
+		}
+		p, err := ask("Senha: ")
+		if err != nil {
+			return err
+		}
+		if err := v.Backup(output, p); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Backup criptografado criado: %s\n", output)
+		return nil
+	}
 	if command == "rotate-password" {
 		current, err := ask("Senha atual: ")
 		if err != nil {

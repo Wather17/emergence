@@ -456,6 +456,81 @@ func TestRotatePasswordRecoversEveryPublicationStage(t *testing.T) {
 	}
 }
 
+func TestBackupRestoreRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	want := populate(t, v)
+	must(t, v.Lock(testPassword))
+	backup := filepath.Join(t.TempDir(), "vault.age")
+	must(t, v.Backup(backup, testPassword))
+	if bytes.Contains(read(t, backup), []byte("2026-09-09.md")) {
+		t.Fatal("backup leaked a note name")
+	}
+	must(t, v.Close())
+
+	restoredRoot := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(restoredRoot, "Inbox"), 0700))
+	put(t, filepath.Join(restoredRoot, ".obsidian", "app.json"), []byte("{}"))
+	must(t, Restore(restoredRoot, backup, testPassword))
+	if exists(filepath.Join(restoredRoot, ".emergence-restore")) || exists(filepath.Join(restoredRoot, "Morning Pages")) {
+		t.Fatal("restore left staging or plaintext notes")
+	}
+	restored, err := Open(restoredRoot)
+	must(t, err)
+	defer restored.Close()
+	if restored.InboxPath() != "Inbox" {
+		t.Fatalf("inbox was not preserved: %q", restored.InboxPath())
+	}
+	must(t, restored.Unlock(testPassword))
+	got, err := snapshot(restored.notes())
+	must(t, err)
+	if !same(got, want) {
+		t.Fatal("restore changed archive contents")
+	}
+	if string(read(t, filepath.Join(restoredRoot, ".obsidian", "app.json"))) != "{}" {
+		t.Fatal("restore overwrote ordinary root files")
+	}
+}
+
+func TestBackupRestoreRejectsUnsafeStates(t *testing.T) {
+	root := t.TempDir()
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	if err := v.Backup(filepath.Join(t.TempDir(), "backup.age"), testPassword); err != nil {
+		t.Fatal(err)
+	}
+	must(t, v.Unlock(testPassword))
+	if err := v.Backup(filepath.Join(t.TempDir(), "open.age"), testPassword); err == nil {
+		t.Fatal("backup accepted an open vault")
+	}
+	must(t, v.Lock(testPassword))
+	must(t, v.Close())
+
+	backup := filepath.Join(t.TempDir(), "backup.age")
+	v, err = Open(root)
+	must(t, err)
+	must(t, v.Backup(backup, testPassword))
+	must(t, v.Close())
+	destination := t.TempDir()
+	if err := Restore(destination, backup, "wrong"); err == nil {
+		t.Fatal("wrong restore password accepted")
+	}
+	if exists(filepath.Join(destination, metadata)) || exists(filepath.Join(destination, ".emergence-restore")) {
+		t.Fatal("failed restore left managed state")
+	}
+	must(t, os.Mkdir(filepath.Join(destination, "Morning Pages"), 0700))
+	if err := Restore(destination, backup, testPassword); err == nil {
+		t.Fatal("restore overwrote an existing private folder")
+	}
+	if exists(filepath.Join(destination, metadata)) {
+		t.Fatal("restore published after a collision")
+	}
+}
+
 func TestInitRejectsExistingFolder(t *testing.T) {
 	root := t.TempDir()
 	must(t, os.Mkdir(filepath.Join(root, "Morning Pages"), 0700))
