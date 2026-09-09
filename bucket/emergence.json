@@ -1,16 +1,16 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Encrypted private notes for a local Obsidian vault.",
   "homepage": "https://github.com/Wather17/emergence",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/Wather17/emergence/releases/download/v0.2.0/emergence_0.2.0_windows_amd64.zip",
-      "hash": "b546e704a00b9bee3883027b64c4e2aa8b4e900dbe162c912609758b381ae0ba"
+      "url": "https://github.com/Wather17/emergence/releases/download/v0.3.0/emergence_0.3.0_windows_amd64.zip",
+      "hash": "50221469091bd2890ca78b7b16fd9c195bd90fa3f9cfb7e840a7da80eab8b5f9"
     },
     "arm64": {
-      "url": "https://github.com/Wather17/emergence/releases/download/v0.2.0/emergence_0.2.0_windows_arm64.zip",
-      "hash": "c537d22ab46180b4de6a0cabc5fe3bab6cf144bed34ef3a9cb0732d40990a426"
+      "url": "https://github.com/Wather17/emergence/releases/download/v0.3.0/emergence_0.3.0_windows_arm64.zip",
+      "hash": "868c8f12ec76b86ac9166443ab25d42b0c6dbb886cc70f0a37e48c53c5f8e512"
     }
   },
   "bin": "emergence.exe",
