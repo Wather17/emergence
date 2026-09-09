@@ -176,7 +176,7 @@ O cache local de issues é sincronizado por `scripts/sync-issues.sh`. Depois da 
 
 O repositório público mantém uma [política de segurança](SECURITY.md). Vulnerabilidades devem ser reportadas pelo canal privado de Security Advisories, nunca em issues públicas. Dependabot acompanha o módulo Go e as GitHub Actions semanalmente; o workflow CodeQL analisa Go em pull requests, pushes na `main` e semanalmente. Mantenha esses checks verdes ao atualizar dependências ou workflows.
 
-Há testes específicos de permissões no Linux (ignorados quando executados como root) e de arquivos abertos sem compartilhamento de exclusão no Windows. A CI executa testes com detector de corridas e compila em ambos os sistemas, disponibilizando os binários como artefatos. Compilar para Windows no Linux não substitui executar os testes no Windows.
+Há testes específicos de permissões no Linux (ignorados quando executados como root) e de arquivos abertos sem compartilhamento de exclusão, junctions/reparse points, atributos somente leitura e colisões case-insensitive no Windows. A CI executa testes com detector de corridas e compila em ambos os sistemas, disponibilizando os binários como artefatos. Compilar para Windows no Linux não substitui executar os testes no Windows.
 
 Validação manual de integração antes de usar notas reais:
 
