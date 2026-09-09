@@ -820,6 +820,69 @@ func TestReviewPlanDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestReviewFiltersByDateSizeAndPath(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	defer v.Close()
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "old.md"), []byte("old"))
+	put(t, filepath.Join(v.notes(), "recent.md"), []byte("recent!"))
+	put(t, filepath.Join(v.notes(), "nested", "inside.md"), []byte("inside"))
+	put(t, filepath.Join(v.notes(), "nested", "skip.txt"), []byte("skip"))
+	old := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.Local)
+	recent := time.Date(2026, time.September, 9, 12, 0, 0, 0, time.Local)
+	must(t, os.Chtimes(filepath.Join(v.notes(), "old.md"), old, old))
+	must(t, os.Chtimes(filepath.Join(v.notes(), "recent.md"), recent, recent))
+	must(t, os.Chtimes(filepath.Join(v.notes(), "nested", "inside.md"), recent, recent))
+	min := int64(7)
+	info, err := v.MarkdownNoteInfo(ReviewFilter{After: &recent, MinSize: &min})
+	must(t, err)
+	if len(info) != 1 || info[0].Name != "recent.md" {
+		t.Fatalf("unexpected date/size filter result: %#v", info)
+	}
+	prefix := ReviewFilter{PathPrefix: "nested"}
+	info, err = v.MarkdownNoteInfo(prefix)
+	must(t, err)
+	if len(info) != 1 || info[0].Name != "nested/inside.md" {
+		t.Fatalf("unexpected path filter result: %#v", info)
+	}
+	before := recent
+	info, err = v.MarkdownNoteInfo(ReviewFilter{Before: &before})
+	must(t, err)
+	if len(info) != 1 || info[0].Name != "old.md" {
+		t.Fatalf("before boundary is not exclusive: %#v", info)
+	}
+	if err := (ReviewFilter{PathPrefix: "../escape"}).Validate(); err == nil {
+		t.Fatal("unsafe path prefix accepted")
+	}
+	if err := (ReviewFilter{MinSize: &min, MaxSize: func() *int64 { n := int64(2); return &n }()}).Validate(); err == nil {
+		t.Fatal("inverted size range accepted")
+	}
+}
+
+func TestReviewFilterOnlyMovesSelectedSet(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	defer v.Close()
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "old.md"), []byte("old"))
+	put(t, filepath.Join(v.notes(), "nested", "recent.md"), []byte("recent"))
+	cutoff := time.Now().In(time.Local).Add(-time.Hour)
+	now := time.Now().In(time.Local)
+	must(t, os.Chtimes(filepath.Join(v.notes(), "old.md"), cutoff.Add(-time.Hour), cutoff.Add(-time.Hour)))
+	must(t, os.Chtimes(filepath.Join(v.notes(), "nested", "recent.md"), now, now))
+	must(t, v.ReviewWithFilter(nil, ReviewFilter{After: &cutoff}))
+	if !exists(filepath.Join(v.notes(), "old.md")) || !exists(filepath.Join(root, "Inbox", "recent.md")) {
+		t.Fatal("review filter changed a note outside the selected set")
+	}
+}
+
 func TestReviewCollisionsPreserveNotes(t *testing.T) {
 	root := t.TempDir()
 	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,6 +53,45 @@ type ReviewPlanEntry struct {
 	Hash        string `json:"sha256"`
 	Destination string `json:"destination,omitempty"`
 }
+
+// NoteInfo is the metadata used to display and filter a Markdown note.
+type NoteInfo struct {
+	Name    string
+	Size    int64
+	ModTime time.Time
+}
+
+// ReviewFilter narrows review candidates before selection and planning.
+// Date bounds use the local timezone; Before is exclusive and After inclusive.
+type ReviewFilter struct {
+	Before     *time.Time
+	After      *time.Time
+	MinSize    *int64
+	MaxSize    *int64
+	PathPrefix string
+}
+
+func (f ReviewFilter) validate() error {
+	if f.Before != nil && f.After != nil && !f.After.Before(*f.Before) {
+		return errors.New("intervalo de datas impossível: after deve ser anterior a before")
+	}
+	if f.MinSize != nil && *f.MinSize < 0 || f.MaxSize != nil && *f.MaxSize < 0 {
+		return errors.New("o tamanho deve ser um inteiro não negativo")
+	}
+	if f.MinSize != nil && f.MaxSize != nil && *f.MinSize > *f.MaxSize {
+		return errors.New("intervalo de tamanhos impossível: min-size maior que max-size")
+	}
+	if f.PathPrefix != "" {
+		prefix := filepath.ToSlash(f.PathPrefix)
+		if err := safePath(prefix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Validate checks filter bounds without touching the vault.
+func (f ReviewFilter) Validate() error { return f.validate() }
 
 type reviewJournal struct {
 	Operation string       `json:"operation"`
@@ -473,7 +513,10 @@ func (v *Vault) SetInbox(candidate string) error {
 
 func (v *Vault) ReviewInProgress() bool { return exists(v.meta("txn", "review.json")) }
 
-func (v *Vault) MarkdownNotes() ([]string, error) {
+func (v *Vault) MarkdownNoteInfo(filter ReviewFilter) ([]NoteInfo, error) {
+	if err := filter.validate(); err != nil {
+		return nil, err
+	}
 	if v.Inbox == "" {
 		return nil, errors.New("Inbox não configurada; execute emergence inbox")
 	}
@@ -491,7 +534,7 @@ func (v *Vault) MarkdownNotes() ([]string, error) {
 	if !notesInfo.IsDir() {
 		return nil, errors.New("a vault precisa estar desbloqueada")
 	}
-	paths := []string{}
+	paths := []NoteInfo{}
 	err = filepath.WalkDir(v.notes(), func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -513,13 +556,42 @@ func (v *Vault) MarkdownNotes() ([]string, error) {
 		if err != nil {
 			return err
 		}
-		paths = append(paths, filepath.ToSlash(rel))
+		name := filepath.ToSlash(rel)
+		if filter.PathPrefix != "" && name != filter.PathPrefix && !strings.HasPrefix(name, filter.PathPrefix+"/") {
+			return nil
+		}
+		modTime := info.ModTime().In(time.Local)
+		if filter.Before != nil && !modTime.Before(*filter.Before) {
+			return nil
+		}
+		if filter.After != nil && modTime.Before(*filter.After) {
+			return nil
+		}
+		if filter.MinSize != nil && info.Size() < *filter.MinSize {
+			return nil
+		}
+		if filter.MaxSize != nil && info.Size() > *filter.MaxSize {
+			return nil
+		}
+		paths = append(paths, NoteInfo{Name: name, Size: info.Size(), ModTime: modTime})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	slices.Sort(paths)
+	sort.Slice(paths, func(i, j int) bool { return paths[i].Name < paths[j].Name })
+	return paths, nil
+}
+
+func (v *Vault) MarkdownNotes() ([]string, error) {
+	info, err := v.MarkdownNoteInfo(ReviewFilter{})
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(info))
+	for _, note := range info {
+		paths = append(paths, note.Name)
+	}
 	return paths, nil
 }
 
@@ -559,7 +631,7 @@ func (v *Vault) readReviewJournal() (reviewJournal, error) {
 	return journal, nil
 }
 
-func (v *Vault) buildReviewJournal(deleteNames []string) (reviewJournal, error) {
+func (v *Vault) buildReviewJournal(deleteNames []string, filter ReviewFilter) (reviewJournal, error) {
 	if exists(v.meta("txn")) {
 		if exists(v.reviewJournalPath()) {
 			return v.readReviewJournal()
@@ -576,9 +648,16 @@ func (v *Vault) buildReviewJournal(deleteNames []string) (reviewJournal, error) 
 	if rel, err := filepath.Rel(v.notes(), v.inbox()); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return reviewJournal{}, errors.New("Inbox não pode ficar dentro da pasta privada")
 	}
-	names, err := v.MarkdownNotes()
+	if err := filter.validate(); err != nil {
+		return reviewJournal{}, err
+	}
+	noteInfo, err := v.MarkdownNoteInfo(filter)
 	if err != nil {
 		return reviewJournal{}, err
+	}
+	names := make([]string, 0, len(noteInfo))
+	for _, note := range noteInfo {
+		names = append(names, note.Name)
 	}
 	all := map[string]reviewFile{}
 	for _, name := range names {
@@ -636,13 +715,20 @@ func (v *Vault) buildReviewJournal(deleteNames []string) (reviewJournal, error) 
 }
 
 func (v *Vault) beginReview(deleteNames []string) (reviewJournal, error) {
+	return v.beginReviewWithFilter(deleteNames, ReviewFilter{})
+}
+
+func (v *Vault) beginReviewWithFilter(deleteNames []string, filter ReviewFilter) (reviewJournal, error) {
+	if err := filter.validate(); err != nil {
+		return reviewJournal{}, err
+	}
 	if err := v.cleanInternal("cleanup"); err != nil {
 		return reviewJournal{}, err
 	}
 	if err := v.cleanInternal("prepare"); err != nil {
 		return reviewJournal{}, err
 	}
-	journal, err := v.buildReviewJournal(deleteNames)
+	journal, err := v.buildReviewJournal(deleteNames, filter)
 	if err != nil {
 		return reviewJournal{}, err
 	}
@@ -660,11 +746,7 @@ func (v *Vault) beginReview(deleteNames []string) (reviewJournal, error) {
 
 // ReviewPlan builds the same validated plan used by Review without creating a
 // transaction or changing any file. It is safe for dry-run and automation.
-func (v *Vault) ReviewPlan(deleteNames []string) ([]ReviewPlanEntry, error) {
-	journal, err := v.buildReviewJournal(deleteNames)
-	if err != nil {
-		return nil, err
-	}
+func reviewPlanEntries(journal reviewJournal) []ReviewPlanEntry {
 	plan := make([]ReviewPlanEntry, 0, len(journal.Deletes)+len(journal.Moves))
 	for _, file := range journal.Deletes {
 		plan = append(plan, ReviewPlanEntry{Name: file.Name, Action: "delete", Size: file.Size, Hash: file.Hash})
@@ -672,7 +754,20 @@ func (v *Vault) ReviewPlan(deleteNames []string) ([]ReviewPlanEntry, error) {
 	for _, moveEntry := range journal.Moves {
 		plan = append(plan, ReviewPlanEntry{Name: moveEntry.Source.Name, Action: "move", Size: moveEntry.Source.Size, Hash: moveEntry.Source.Hash, Destination: moveEntry.Destination})
 	}
-	return plan, nil
+	return plan
+}
+
+// ReviewPlanWithFilter builds a validated plan without changing any file.
+func (v *Vault) ReviewPlanWithFilter(deleteNames []string, filter ReviewFilter) ([]ReviewPlanEntry, error) {
+	journal, err := v.buildReviewJournal(deleteNames, filter)
+	if err != nil {
+		return nil, err
+	}
+	return reviewPlanEntries(journal), nil
+}
+
+func (v *Vault) ReviewPlan(deleteNames []string) ([]ReviewPlanEntry, error) {
+	return v.ReviewPlanWithFilter(deleteNames, ReviewFilter{})
 }
 
 func (v *Vault) applyReview(journal reviewJournal) error {
@@ -743,12 +838,19 @@ func (v *Vault) applyReview(journal reviewJournal) error {
 // Review applies the selected deletions and moves every remaining Markdown
 // note to the configured Inbox. An existing review journal is resumed.
 func (v *Vault) Review(deleteNames []string) error {
+	return v.ReviewWithFilter(deleteNames, ReviewFilter{})
+}
+
+// ReviewWithFilter applies the selected deletions and moves every remaining
+// filtered Markdown note to the configured Inbox. An existing journal is
+// always resumed as-is, preserving its original snapshot.
+func (v *Vault) ReviewWithFilter(deleteNames []string, filter ReviewFilter) error {
 	var journal reviewJournal
 	var err error
 	if v.ReviewInProgress() {
 		journal, err = v.readReviewJournal()
 	} else {
-		journal, err = v.beginReview(deleteNames)
+		journal, err = v.beginReviewWithFilter(deleteNames, filter)
 	}
 	if err != nil {
 		return err

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"emergence/internal/vault"
 	"golang.org/x/term"
@@ -93,6 +94,54 @@ func confirmed(raw string) bool {
 	}
 }
 
+func parseReviewFilter(before, after string, minSize, maxSize int64, minSet, maxSet bool, pathPrefix string) (vault.ReviewFilter, error) {
+	parseDate := func(raw string) (*time.Time, error) {
+		if raw == "" {
+			return nil, nil
+		}
+		parsed, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			return nil, fmt.Errorf("data inválida %q; use YYYY-MM-DD", raw)
+		}
+		local := time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 0, 0, 0, 0, time.Local)
+		return &local, nil
+	}
+	beforeTime, err := parseDate(before)
+	if err != nil {
+		return vault.ReviewFilter{}, err
+	}
+	afterTime, err := parseDate(after)
+	if err != nil {
+		return vault.ReviewFilter{}, err
+	}
+	filter := vault.ReviewFilter{Before: beforeTime, After: afterTime, PathPrefix: pathPrefix}
+	if minSet {
+		if minSize < 0 {
+			return vault.ReviewFilter{}, errors.New("o tamanho deve ser um inteiro não negativo")
+		}
+		filter.MinSize = &minSize
+	}
+	if maxSet {
+		if maxSize < 0 {
+			return vault.ReviewFilter{}, errors.New("o tamanho deve ser um inteiro não negativo")
+		}
+		filter.MaxSize = &maxSize
+	}
+	if err := filter.Validate(); err != nil {
+		return vault.ReviewFilter{}, err
+	}
+	return filter, nil
+}
+
+func hasFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name || strings.HasPrefix(arg, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
 		fmt.Fprintf(out, "emergence %s (%s)\n", version, commit)
@@ -120,6 +169,11 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	dryRun := false
 	output := ""
 	input := ""
+	before := ""
+	after := ""
+	minSize := int64(-1)
+	maxSize := int64(-1)
+	pathPrefix := ""
 	if command == "doctor" {
 		fs.BoolVar(&checkArchive, "check-archive", false, "autenticar e validar integralmente sealed.age")
 	}
@@ -131,6 +185,11 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	}
 	if command == "review" {
 		fs.BoolVar(&dryRun, "dry-run", false, "mostrar o plano sem alterar arquivos")
+		fs.StringVar(&before, "before", "", "incluir notas modificadas antes de YYYY-MM-DD")
+		fs.StringVar(&after, "after", "", "incluir notas modificadas em/depois de YYYY-MM-DD")
+		fs.Int64Var(&minSize, "min-size", -1, "tamanho mínimo em bytes")
+		fs.Int64Var(&maxSize, "max-size", -1, "tamanho máximo em bytes")
+		fs.StringVar(&pathPrefix, "path", "", "prefixo de subpasta relativo")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -140,6 +199,14 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	}
 	if fs.NArg() != 0 {
 		return errors.New("argumentos inesperados; use emergence help")
+	}
+	reviewFilter := vault.ReviewFilter{}
+	if command == "review" {
+		var filterErr error
+		reviewFilter, filterErr = parseReviewFilter(before, after, minSize, maxSize, hasFlag(args[1:], "--min-size"), hasFlag(args[1:], "--max-size"), pathPrefix)
+		if filterErr != nil {
+			return filterErr
+		}
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -315,9 +382,13 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 			fmt.Fprintln(out, "Revisão concluída.")
 			return nil
 		}
-		notes, err := v.MarkdownNotes()
+		noteInfo, err := v.MarkdownNoteInfo(reviewFilter)
 		if err != nil {
 			return err
+		}
+		notes := make([]string, 0, len(noteInfo))
+		for _, note := range noteInfo {
+			notes = append(notes, note.Name)
 		}
 		if len(notes) == 0 {
 			fmt.Fprintln(out, "Nenhuma nota Markdown na pasta privada.")
@@ -325,7 +396,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		}
 		fmt.Fprintln(out, "Notas Markdown:")
 		for i, note := range notes {
-			fmt.Fprintf(out, "  %d) %s\n", i+1, note)
+			fmt.Fprintf(out, "  %d) %s (%d bytes, modificação %s)\n", i+1, note, noteInfo[i].Size, noteInfo[i].ModTime.Format("2006-01-02 15:04:05 -07:00"))
 		}
 		answer, err := ask("Números para apagar (vazio mantém todas; cancelar aborta): ")
 		if err != nil {
@@ -340,7 +411,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 			return nil
 		}
 		if dryRun {
-			plan, err := v.ReviewPlan(selected)
+			plan, err := v.ReviewPlanWithFilter(selected, reviewFilter)
 			if err != nil {
 				return err
 			}
@@ -369,7 +440,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 			fmt.Fprintln(out, "Revisão cancelada.")
 			return nil
 		}
-		if err := v.Review(selected); err != nil {
+		if err := v.ReviewWithFilter(selected, reviewFilter); err != nil {
 			return err
 		}
 		fmt.Fprintln(out, "Revisão concluída.")
