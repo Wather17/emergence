@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -151,5 +153,45 @@ func TestBackupAndRestoreCommands(t *testing.T) {
 	defer v.Close()
 	if err := v.ValidatePassword("backup password"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReviewDryRunCommandDoesNotMutate(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "Inbox"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Init(root, "Morning Pages", "review password"); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Unlock("review password"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Morning Pages", "keep.md"), []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	answers := []string{"1"}
+	index := 0
+	var out bytes.Buffer
+	if err := run([]string{"review", "--dry-run"}, &out, func(string) (string, error) {
+		answer := answers[index]
+		index++
+		return answer, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "dry-run") || !strings.Contains(out.String(), "Nenhum arquivo foi alterado") {
+		t.Fatalf("unexpected dry-run output: %s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "Morning Pages", "keep.md")); err != nil {
+		t.Fatal("dry-run moved the note")
 	}
 }

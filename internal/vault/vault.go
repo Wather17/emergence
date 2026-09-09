@@ -43,6 +43,15 @@ type reviewMove struct {
 	Destination string     `json:"destination"`
 }
 
+// ReviewPlanEntry describes one note action without exposing note contents.
+type ReviewPlanEntry struct {
+	Name        string `json:"name"`
+	Action      string `json:"action"`
+	Size        int64  `json:"size"`
+	Hash        string `json:"sha256"`
+	Destination string `json:"destination,omitempty"`
+}
+
 type reviewJournal struct {
 	Operation string       `json:"operation"`
 	Inbox     string       `json:"inbox"`
@@ -494,13 +503,7 @@ func (v *Vault) readReviewJournal() (reviewJournal, error) {
 	return journal, nil
 }
 
-func (v *Vault) beginReview(deleteNames []string) (reviewJournal, error) {
-	if err := v.cleanInternal("cleanup"); err != nil {
-		return reviewJournal{}, err
-	}
-	if err := v.cleanInternal("prepare"); err != nil {
-		return reviewJournal{}, err
-	}
+func (v *Vault) buildReviewJournal(deleteNames []string) (reviewJournal, error) {
 	if exists(v.meta("txn")) {
 		if exists(v.reviewJournalPath()) {
 			return v.readReviewJournal()
@@ -573,6 +576,20 @@ func (v *Vault) beginReview(deleteNames []string) (reviewJournal, error) {
 		}
 		journal.Moves = append(journal.Moves, reviewMove{Source: file, Destination: destination})
 	}
+	return journal, nil
+}
+
+func (v *Vault) beginReview(deleteNames []string) (reviewJournal, error) {
+	if err := v.cleanInternal("cleanup"); err != nil {
+		return reviewJournal{}, err
+	}
+	if err := v.cleanInternal("prepare"); err != nil {
+		return reviewJournal{}, err
+	}
+	journal, err := v.buildReviewJournal(deleteNames)
+	if err != nil {
+		return reviewJournal{}, err
+	}
 	if err := os.Mkdir(v.meta("txn"), 0700); err != nil {
 		return reviewJournal{}, err
 	}
@@ -583,6 +600,23 @@ func (v *Vault) beginReview(deleteNames []string) (reviewJournal, error) {
 		return reviewJournal{}, err
 	}
 	return journal, v.checkpoint("review-begun")
+}
+
+// ReviewPlan builds the same validated plan used by Review without creating a
+// transaction or changing any file. It is safe for dry-run and automation.
+func (v *Vault) ReviewPlan(deleteNames []string) ([]ReviewPlanEntry, error) {
+	journal, err := v.buildReviewJournal(deleteNames)
+	if err != nil {
+		return nil, err
+	}
+	plan := make([]ReviewPlanEntry, 0, len(journal.Deletes)+len(journal.Moves))
+	for _, file := range journal.Deletes {
+		plan = append(plan, ReviewPlanEntry{Name: file.Name, Action: "delete", Size: file.Size, Hash: file.Hash})
+	}
+	for _, moveEntry := range journal.Moves {
+		plan = append(plan, ReviewPlanEntry{Name: moveEntry.Source.Name, Action: "move", Size: moveEntry.Source.Size, Hash: moveEntry.Source.Hash, Destination: moveEntry.Destination})
+	}
+	return plan, nil
 }
 
 func (v *Vault) applyReview(journal reviewJournal) error {
