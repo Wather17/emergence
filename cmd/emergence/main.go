@@ -11,6 +11,9 @@ import (
 	"golang.org/x/term"
 )
 
+var version = "dev"
+var commit = "unknown"
+
 const usage = `Emergence — notas privadas na sua vault
 
 Uso:
@@ -18,6 +21,7 @@ Uso:
   emergence unlock
   emergence lock
   emergence status
+  emergence version
   emergence help
 
 Execute init na raiz da vault. Os demais comandos também funcionam em subpastas.
@@ -43,6 +47,10 @@ func password(prompt string) (string, error) {
 }
 
 func run(args []string, out io.Writer, ask func(string) (string, error)) error {
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
+		fmt.Fprintf(out, "emergence %s (%s)\n", version, commit)
+		return nil
+	}
 	if len(args) == 0 {
 		fmt.Fprint(out, usage)
 		return nil

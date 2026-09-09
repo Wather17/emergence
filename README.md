@@ -4,6 +4,22 @@ CLI em Go para manter uma pasta de notas criptografada dentro da sua vault local
 
 ## Instalação
 
+### Windows: Scoop ou download
+
+Depois que o repositório estiver público e a primeira release estiver publicada, com [Scoop](https://scoop.sh/) instalado:
+
+```powershell
+scoop bucket add emergence https://github.com/Wather17/emergence
+scoop install emergence/emergence
+emergence version
+```
+
+Para atualizar, use `scoop update emergence`. O bucket deste repositório é atualizado a cada release estável. As vaults ficam fora da instalação e não são removidas ao atualizar ou desinstalar o CLI.
+
+Sem Scoop, baixe o ZIP para `windows_amd64` (Intel/AMD x64) ou `windows_arm64` (Windows ARM) na [página de releases](https://github.com/Wather17/emergence/releases), extraia e coloque `emergence.exe` numa pasta do `Path`. Não é necessário instalar Go. Cada release inclui `checksums.txt`; você pode comparar o SHA-256 do ZIP com `Get-FileHash .\nome-do-pacote.zip -Algorithm SHA256`.
+
+### Compilar a partir do código
+
 Requer Go 1.26 ou superior para compilar. O binário pronto não depende de Go ou do comando `age` instalado.
 
 No Linux/WSL, a partir deste repositório:
@@ -128,3 +144,27 @@ Validação manual de integração antes de usar notas reais:
 5. Repita com uma senha errada e confirme que não aparecem notas abertas.
 
 Fora desta versão: sincronização, criação da nota diária, bloqueio automático, múltiplas pastas, troca de senha e integração com chaveiro do sistema.
+
+## Publicar uma release
+
+O workflow [Release Emergence](.github/workflows/release.yml) segue o fluxo por tags do Caramel. Depois de integrar o código à `main`, publique uma tag estável como:
+
+```sh
+git tag -a v0.1.0 -m "Emergence v0.1.0"
+git push origin v0.1.0
+```
+
+A pipeline executa os testes em Linux e Windows, compila os pacotes Windows x64 e ARM64 num runner Windows e verifica a versão do executável x64. ARM64 é compilado, mas não executado no runner x64. Depois, publica dois ZIPs, SHA-256 e um manifesto Scoop na GitHub Release. Cada ZIP contém `emergence.exe`, README e avisos de licença das dependências e do Go, além da licença do projeto quando definida.
+
+O último job cria/atualiza `bucket/emergence.json` na `main`, com URLs e hashes dos pacotes publicados. Usa apenas o `GITHUB_TOKEN` automático; a branch precisa permitir esse push do bot. Se houver falha, a release continua disponível e o job fica vermelho para ser reexecutado após resolver a causa. A publicação de uma versão antiga não rebaixa o bucket.
+
+Somente tags `vX.Y.Z` são aceitas nesta versão; pré-releases não são publicadas pelo fluxo. Não mova ou reutilize uma tag publicada. Para distribuir uma correção, crie uma versão nova. Tornar o repositório público é uma configuração separada: a CI não altera a visibilidade.
+
+É possível validar os pacotes localmente, sem publicar, a partir da raiz do projeto:
+
+```sh
+go mod download
+go run ./tools/release -tag v0.1.0 -repository Wather17/emergence -commit 33d01b1 -dist dist/validation
+```
+
+Substitua o commit pelo SHA real da versão. `dist/` é ignorado pelo Git. O manifesto instalável do bucket é gerado pela primeira release, sem URLs ou hashes provisórios no código.

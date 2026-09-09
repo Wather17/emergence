@@ -31,3 +31,16 @@ func TestPasswordConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestVersionWithoutVaultOrPassword(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, arg := range []string{"version", "--version"} {
+		var out bytes.Buffer
+		if err := run([]string{arg}, &out, func(string) (string, error) { t.Fatal("unexpected password prompt"); return "", nil }); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != "emergence "+version+" ("+commit+")\n" {
+			t.Fatal(out.String())
+		}
+	}
+}

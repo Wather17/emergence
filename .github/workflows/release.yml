@@ -1,0 +1,116 @@
+name: Release Emergence
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  package:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - name: Build Windows packages and Scoop manifest
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          go run ./tools/release -tag $env:RELEASE_TAG -repository $env:RELEASE_REPOSITORY -commit $env:RELEASE_COMMIT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = & ./dist/amd64/emergence.exe version
+          if ($LASTEXITCODE -ne 0 -or $version -ne "emergence $($env:RELEASE_TAG.Substring(1)) ($env:RELEASE_COMMIT)") {
+            throw "Unexpected executable version: $version"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/checksums.txt
+            dist/emergence.json
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: dist
+      - name: Verify package checksums
+        working-directory: dist
+        run: sha256sum --check checksums.txt
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Emergence ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.zip
+            dist/checksums.txt
+            dist/emergence.json
+
+  scoop:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: scoop-bucket
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-windows
+          path: dist
+      - name: Update the repository's Scoop bucket
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          incoming=$(jq -r .version dist/emergence.json)
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git switch --detach origin/main
+            if [[ -f bucket/emergence.json ]]; then
+              current=$(jq -r .version bucket/emergence.json)
+              newest=$(printf '%s\n%s\n' "$current" "$incoming" | sort -V | tail -n 1)
+              if [[ "$newest" != "$incoming" ]]; then
+                echo "Bucket already has a newer version ($current); skipping $incoming."
+                exit 0
+              fi
+            fi
+            mkdir -p bucket
+            cp dist/emergence.json bucket/emergence.json
+            git add bucket/emergence.json
+            if git diff --cached --quiet; then exit 0; fi
+            git commit -m "chore(scoop): update emergence to v$incoming"
+            if git push origin HEAD:main; then exit 0; fi
+          done
+          echo 'Scoop update failed. Check main branch rules and rerun this job.' >&2
+          exit 1
