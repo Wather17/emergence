@@ -56,9 +56,12 @@ Depois de salvar suas notas e encerrar a edição:
 ```powershell
 emergence lock
 emergence status
+emergence doctor
 ```
 
 `lock` pede **a mesma senha**, verifica a nova cópia criptografada e remove os arquivos abertos. `status` informa `aberta`, `trancada` ou `incompleta`; não pede senha nem verifica a integridade criptográfica do arquivo.
+
+Para investigar uma vault sem alterar notas ou metadata, use `emergence doctor`. O relatório agrega verificações estruturais de configuração, arquivo criptografado, Inbox, pasta privada e operações incompletas, com níveis `OK`, `WARN` e `ERROR` e uma orientação para cada problema. O modo padrão não pede senha. Para autenticar e drenar o arquivo criptografado inteiro sem criar uma pasta aberta, use `emergence doctor --check-archive` em um terminal interativo.
 
 Na inicialização, o CLI procura pastas cujo nome contenha `Inbox` (sem diferenciar maiúsculas). Uma única candidata vira a Inbox padrão; com várias, escolha explicitamente com `emergence inbox`, que lista as opções e salva a seleção. Sem candidatas, crie uma pasta e execute esse comando depois.
 
