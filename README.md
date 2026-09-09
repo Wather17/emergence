@@ -137,6 +137,8 @@ go build -o bin/emergence ./cmd/emergence
 
 Os testes cobrem ciclos completos, pasta vazia, anexos, acentos, senha errada, truncamento/adulteração, caminhos maliciosos, links, conflitos, alterações concorrentes e recuperação em etapas de publicação e remoção. Os testes internos usam scrypt reduzido para executar rapidamente; o executável usa o padrão age.
 
+O cache local de issues é sincronizado por `scripts/sync-issues.sh`. Depois da primeira sincronização, `.emergence-issues-manifest` registra exatamente os arquivos gerenciados; Markdown que não estiver no manifesto nunca é removido. `ISSUES_DIR` pode apontar para outro diretório, desde que o caminho não seja um link. O teste isolado do sincronizador pode ser executado com `scripts/sync-issues-test.sh`.
+
 Há testes específicos de permissões no Linux (ignorados quando executados como root) e de arquivos abertos sem compartilhamento de exclusão no Windows. A CI executa testes com detector de corridas e compila em ambos os sistemas, disponibilizando os binários como artefatos. Compilar para Windows no Linux não substitui executar os testes no Windows.
 
 Validação manual de integração antes de usar notas reais:
