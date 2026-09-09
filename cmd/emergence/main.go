@@ -23,6 +23,7 @@ Uso:
   emergence unlock
   emergence lock
   emergence status
+  emergence doctor [--check-archive]
   emergence inbox
   emergence review
   emergence destroy
@@ -102,7 +103,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return nil
 	}
 	command := args[0]
-	if command != "init" && command != "unlock" && command != "lock" && command != "status" && command != "inbox" && command != "review" && command != "destroy" {
+	if command != "init" && command != "unlock" && command != "lock" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "destroy" {
 		return fmt.Errorf("comando desconhecido: %s; use emergence help", command)
 	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -110,6 +111,10 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	folder := "Morning Pages"
 	if command == "init" {
 		fs.StringVar(&folder, "folder", folder, "nome da pasta privada")
+	}
+	checkArchive := false
+	if command == "doctor" {
+		fs.BoolVar(&checkArchive, "check-archive", false, "autenticar e validar integralmente sealed.age")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -153,6 +158,38 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 			default:
 				fmt.Fprintln(out, "Várias pastas Inbox encontradas; execute emergence inbox para escolher a padrão.")
 			}
+		}
+		return nil
+	}
+	if command == "doctor" {
+		var p string
+		if checkArchive {
+			if !term.IsTerminal(int(os.Stdin.Fd())) {
+				return errors.New("doctor --check-archive exige um terminal interativo")
+			}
+			p, err = ask("Senha para verificar sealed.age: ")
+			if err != nil {
+				return err
+			}
+		}
+		report, err := vault.Doctor(cwd, checkArchive, p)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Diagnóstico da vault: %s\n", report.Root)
+		for _, check := range report.Checks {
+			fmt.Fprintf(out, "[%s] %s", check.Severity, check.Name)
+			if check.Path != "" {
+				fmt.Fprintf(out, " (%s)", check.Path)
+			}
+			fmt.Fprintf(out, ": %s", check.Message)
+			if check.Action != "" {
+				fmt.Fprintf(out, " — %s", check.Action)
+			}
+			fmt.Fprintln(out)
+		}
+		if report.HasErrors() {
+			return errors.New("doctor encontrou problemas que exigem intervenção")
 		}
 		return nil
 	}

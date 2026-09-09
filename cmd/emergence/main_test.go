@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"emergence/internal/vault"
 )
 
 func TestUsageAndValidation(t *testing.T) {
@@ -70,5 +72,23 @@ func TestVersionWithoutVaultOrPassword(t *testing.T) {
 		if out.String() != "emergence "+version+" ("+commit+")\n" {
 			t.Fatal(out.String())
 		}
+	}
+}
+
+func TestDoctorDoesNotPromptByDefault(t *testing.T) {
+	root := t.TempDir()
+	if err := vault.Init(root, "Morning Pages", "test password"); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	var out bytes.Buffer
+	if err := run([]string{"doctor"}, &out, func(string) (string, error) {
+		t.Fatal("doctor requested a password without --check-archive")
+		return "", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Diagnóstico da vault") || !strings.Contains(out.String(), "[OK]") {
+		t.Fatalf("unexpected doctor output: %s", out.String())
 	}
 }

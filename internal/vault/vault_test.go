@@ -319,6 +319,67 @@ func TestStatusRejectsMissingSealedArchive(t *testing.T) {
 	}
 }
 
+func TestDoctorHealthyAndReadOnly(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	before := read(t, filepath.Join(root, metadata, "sealed.age"))
+	report, err := Doctor(filepath.Join(root, "Inbox"), false, "")
+	must(t, err)
+	if report.Root != root || report.HasErrors() {
+		t.Fatalf("unexpected healthy report: %#v", report)
+	}
+	if !bytes.Equal(before, read(t, filepath.Join(root, metadata, "sealed.age"))) {
+		t.Fatal("doctor changed sealed archive")
+	}
+	for _, check := range report.Checks {
+		if strings.Contains(check.Message, "senha") || strings.Contains(check.Message, "Markdown") {
+			t.Fatalf("unexpected sensitive diagnostic: %#v", check)
+		}
+	}
+}
+
+func TestDoctorAggregatesStructuralProblems(t *testing.T) {
+	root := t.TempDir()
+	must(t, Init(root, "Morning Pages", testPassword))
+	meta := filepath.Join(root, metadata)
+	must(t, os.WriteFile(filepath.Join(meta, "config.json"), []byte("{"), 0600))
+	must(t, os.Mkdir(filepath.Join(meta, "txn"), 0700))
+	must(t, os.WriteFile(filepath.Join(root, ".emergence-destroy"), []byte("{}"), 0600))
+	report, err := Doctor(root, false, "")
+	must(t, err)
+	if !report.HasErrors() {
+		t.Fatalf("invalid vault was reported healthy: %#v", report)
+	}
+	seen := map[string]bool{}
+	for _, check := range report.Checks {
+		seen[check.Name] = true
+	}
+	for _, name := range []string{"config", "txn", "destroy-marker"} {
+		if !seen[name] {
+			t.Fatalf("missing %s diagnostic: %#v", name, report.Checks)
+		}
+	}
+}
+
+func TestDoctorCheckArchiveDoesNotCreatePlaintext(t *testing.T) {
+	v := fixture(t)
+	before := read(t, v.meta("sealed.age"))
+	valid, err := Doctor(v.Root, true, testPassword)
+	must(t, err)
+	if valid.HasErrors() {
+		t.Fatalf("valid archive was reported invalid: %#v", valid)
+	}
+	report, err := Doctor(v.Root, true, "wrong")
+	must(t, err)
+	if !report.HasErrors() {
+		t.Fatal("wrong archive password was reported healthy")
+	}
+	if exists(v.notes()) || !bytes.Equal(before, read(t, v.meta("sealed.age"))) {
+		t.Fatal("archive check changed vault state")
+	}
+}
+
 func TestInitRejectsExistingFolder(t *testing.T) {
 	root := t.TempDir()
 	must(t, os.Mkdir(filepath.Join(root, "Morning Pages"), 0700))
