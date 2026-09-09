@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
 	"emergence/internal/vault"
 	"golang.org/x/term"
@@ -21,6 +23,8 @@ Uso:
   emergence unlock
   emergence lock
   emergence status
+  emergence inbox
+  emergence review
   emergence destroy
   emergence version
   emergence help
@@ -49,6 +53,41 @@ func password(prompt string) (string, error) {
 	return s, nil
 }
 
+func parseSelection(raw string, notes []string) ([]string, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, false, nil
+	}
+	switch strings.ToLower(raw) {
+	case "c", "cancel", "cancelar", "q", "quit":
+		return nil, true, nil
+	}
+	fields := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+	selected := make([]string, 0, len(fields))
+	seen := map[int]bool{}
+	for _, field := range fields {
+		n, err := strconv.Atoi(field)
+		if err != nil || n < 1 || n > len(notes) {
+			return nil, false, fmt.Errorf("seleção inválida: %s", field)
+		}
+		if seen[n] {
+			return nil, false, fmt.Errorf("nota selecionada mais de uma vez: %d", n)
+		}
+		seen[n] = true
+		selected = append(selected, notes[n-1])
+	}
+	return selected, false, nil
+}
+
+func confirmed(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "s", "sim", "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
 func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
 		fmt.Fprintf(out, "emergence %s (%s)\n", version, commit)
@@ -63,7 +102,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return nil
 	}
 	command := args[0]
-	if command != "init" && command != "unlock" && command != "lock" && command != "status" && command != "destroy" {
+	if command != "init" && command != "unlock" && command != "lock" && command != "status" && command != "inbox" && command != "review" && command != "destroy" {
 		return fmt.Errorf("comando desconhecido: %s; use emergence help", command)
 	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -104,6 +143,17 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 			return err
 		}
 		fmt.Fprintf(out, "Vault inicializada e trancada. Use emergence unlock para abrir %q.\n", folder)
+		candidates, err := vault.FindInboxCandidates(cwd, folder)
+		if err == nil {
+			switch len(candidates) {
+			case 0:
+				fmt.Fprintln(out, "Nenhuma pasta Inbox encontrada; review ficará disponível após executar emergence inbox.")
+			case 1:
+				fmt.Fprintf(out, "Inbox padrão configurada: %s\n", candidates[0])
+			default:
+				fmt.Fprintln(out, "Várias pastas Inbox encontradas; execute emergence inbox para escolher a padrão.")
+			}
+		}
 		return nil
 	}
 	v, err := vault.Open(cwd)
@@ -111,6 +161,90 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return err
 	}
 	defer v.Close()
+	if command == "inbox" {
+		candidates, err := v.InboxCandidates()
+		if err != nil {
+			return err
+		}
+		if len(candidates) == 0 {
+			fmt.Fprintln(out, "Nenhuma pasta Inbox encontrada na vault.")
+			return nil
+		}
+		fmt.Fprintln(out, "Pastas Inbox disponíveis:")
+		for i, candidate := range candidates {
+			fmt.Fprintf(out, "  %d) %s\n", i+1, candidate)
+		}
+		answer, err := ask("Escolha o número da Inbox (ou cancelar): ")
+		if err != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(answer), "cancelar") || strings.EqualFold(strings.TrimSpace(answer), "cancel") || strings.EqualFold(strings.TrimSpace(answer), "c") {
+			fmt.Fprintln(out, "Seleção cancelada.")
+			return nil
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(answer))
+		if err != nil || n < 1 || n > len(candidates) {
+			return errors.New("seleção de Inbox inválida")
+		}
+		if err := v.SetInbox(candidates[n-1]); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Inbox padrão configurada: %s\n", v.InboxPath())
+		return nil
+	}
+	if command == "review" {
+		if v.ReviewInProgress() {
+			fmt.Fprintln(out, "Retomando revisão incompleta...")
+			if err := v.Review(nil); err != nil {
+				return err
+			}
+			fmt.Fprintln(out, "Revisão concluída.")
+			return nil
+		}
+		notes, err := v.MarkdownNotes()
+		if err != nil {
+			return err
+		}
+		if len(notes) == 0 {
+			fmt.Fprintln(out, "Nenhuma nota Markdown na pasta privada.")
+			return nil
+		}
+		fmt.Fprintln(out, "Notas Markdown:")
+		for i, note := range notes {
+			fmt.Fprintf(out, "  %d) %s\n", i+1, note)
+		}
+		answer, err := ask("Números para apagar (vazio mantém todas; cancelar aborta): ")
+		if err != nil {
+			return err
+		}
+		selected, canceled, err := parseSelection(answer, notes)
+		if err != nil {
+			return err
+		}
+		if canceled {
+			fmt.Fprintln(out, "Revisão cancelada.")
+			return nil
+		}
+		if len(selected) > 0 {
+			fmt.Fprintln(out, "Notas que serão apagadas:")
+			for _, note := range selected {
+				fmt.Fprintf(out, "  %s\n", note)
+			}
+		}
+		confirm, err := ask("Confirmar revisão? [s/N]: ")
+		if err != nil {
+			return err
+		}
+		if !confirmed(confirm) {
+			fmt.Fprintln(out, "Revisão cancelada.")
+			return nil
+		}
+		if err := v.Review(selected); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "Revisão concluída.")
+		return nil
+	}
 	if command == "destroy" {
 		if err := v.ValidateDestroyCwd(cwd); err != nil {
 			return err

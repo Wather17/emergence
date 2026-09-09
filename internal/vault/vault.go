@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/gofrs/flock"
@@ -16,6 +17,7 @@ const metadata = ".emergence"
 type config struct {
 	Version int    `json:"version"`
 	Folder  string `json:"folder"`
+	Inbox   string `json:"inbox,omitempty"`
 }
 
 type transaction struct {
@@ -30,9 +32,28 @@ type destroyRecord struct {
 	Metadata string `json:"metadata"`
 }
 
+type reviewFile struct {
+	Name string `json:"name"`
+	Hash string `json:"sha256"`
+	Size int64  `json:"size"`
+}
+
+type reviewMove struct {
+	Source      reviewFile `json:"source"`
+	Destination string     `json:"destination"`
+}
+
+type reviewJournal struct {
+	Operation string       `json:"operation"`
+	Inbox     string       `json:"inbox"`
+	Deletes   []reviewFile `json:"deletes,omitempty"`
+	Moves     []reviewMove `json:"moves,omitempty"`
+}
+
 type Vault struct {
 	Root   string
 	Folder string
+	Inbox  string
 	guard  *flock.Flock
 	hook   func(string) error // fault injection at durable transaction boundaries
 }
@@ -45,6 +66,68 @@ func validFolder(folder string) error {
 		return errors.New("a pasta deve ter um nome simples, sem começar com ponto")
 	}
 	return nil
+}
+
+func validInbox(inbox string) error {
+	if inbox == "" {
+		return nil
+	}
+	if err := safePath(inbox); err != nil {
+		return err
+	}
+	return nil
+}
+
+// FindInboxCandidates returns relative directory paths whose names contain
+// "inbox", case-insensitively. Internal metadata, the private folder and
+// links are never considered candidates.
+func FindInboxCandidates(root, privateFolder string) ([]string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := plain(root); err != nil {
+		return nil, err
+	}
+	candidates := []string{}
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := plain(path)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == metadata || rel == privateFolder || strings.HasPrefix(rel, metadata+"/") || strings.HasPrefix(rel, privateFolder+"/") {
+			return filepath.SkipDir
+		}
+		if strings.Contains(strings.ToLower(filepath.Base(rel)), "inbox") {
+			candidates = append(candidates, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	slices.Sort(candidates)
+	return candidates, nil
 }
 
 func writeNew(path string, data []byte) (err error) {
@@ -116,7 +199,15 @@ func Init(root, folder, password string) error {
 	}
 	// This directory is ours and contains no user notes, only an empty archive.
 	defer os.RemoveAll(stage)
-	if err := writeJSON(filepath.Join(stage, "config.json"), config{1, folder}); err != nil {
+	inbox := ""
+	candidates, err := FindInboxCandidates(root, folder)
+	if err != nil {
+		return err
+	}
+	if len(candidates) == 1 {
+		inbox = candidates[0]
+	}
+	if err := writeJSON(filepath.Join(stage, "config.json"), config{Version: 1, Folder: folder, Inbox: inbox}); err != nil {
 		return err
 	}
 	archive := filepath.Join(stage, "sealed.age")
@@ -162,6 +253,9 @@ func Open(start string) (*Vault, error) {
 	if err := validFolder(c.Folder); err != nil {
 		return nil, err
 	}
+	if err := validInbox(c.Inbox); err != nil {
+		return nil, err
+	}
 	guard := flock.New(filepath.Join(m, "operation.lock"), flock.SetPermissions(0600))
 	ok, err := guard.TryLock()
 	if err != nil {
@@ -170,7 +264,7 @@ func Open(start string) (*Vault, error) {
 	if !ok {
 		return nil, errors.New("outra operação está em andamento nesta vault")
 	}
-	return &Vault{Root: root, Folder: c.Folder, guard: guard}, nil
+	return &Vault{Root: root, Folder: c.Folder, Inbox: c.Inbox, guard: guard}, nil
 }
 
 func (v *Vault) Close() error {
@@ -185,6 +279,333 @@ func (v *Vault) meta(parts ...string) string {
 	return filepath.Join(append([]string{v.Root, metadata}, parts...)...)
 }
 func (v *Vault) notes() string { return filepath.Join(v.Root, v.Folder) }
+func (v *Vault) inbox() string {
+	if v.Inbox == "" {
+		return ""
+	}
+	return filepath.Join(v.Root, filepath.FromSlash(v.Inbox))
+}
+
+// InboxPath returns the configured Inbox relative to the vault root, or an
+// empty string when init found none or the user has not selected one.
+func (v *Vault) InboxPath() string { return v.Inbox }
+
+func (v *Vault) InboxCandidates() ([]string, error) {
+	return FindInboxCandidates(v.Root, v.Folder)
+}
+
+func (v *Vault) saveConfig() error {
+	tmp := v.meta("config.next")
+	if exists(tmp) {
+		if err := validateTree(tmp); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(tmp); err != nil {
+			return err
+		}
+	}
+	if err := writeJSON(tmp, config{Version: 1, Folder: v.Folder, Inbox: v.Inbox}); err != nil {
+		return err
+	}
+	if err := syncDir(v.meta()); err != nil {
+		return err
+	}
+	if err := os.Remove(v.meta("config.json")); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, v.meta("config.json")); err != nil {
+		return err
+	}
+	return syncDir(v.meta())
+}
+
+func (v *Vault) SetInbox(candidate string) error {
+	if err := validInbox(candidate); err != nil {
+		return err
+	}
+	candidates, err := v.InboxCandidates()
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(candidates, candidate) {
+		return errors.New("Inbox inválida ou inexistente")
+	}
+	path := filepath.Join(v.Root, filepath.FromSlash(candidate))
+	info, err := plain(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("Inbox não é uma pasta")
+	}
+	previous := v.Inbox
+	v.Inbox = candidate
+	if err := v.saveConfig(); err != nil {
+		v.Inbox = previous
+		return err
+	}
+	return nil
+}
+
+func (v *Vault) ReviewInProgress() bool { return exists(v.meta("txn", "review.json")) }
+
+func (v *Vault) MarkdownNotes() ([]string, error) {
+	if v.Inbox == "" {
+		return nil, errors.New("Inbox não configurada; execute emergence inbox")
+	}
+	info, err := plain(v.inbox())
+	if err != nil {
+		return nil, errors.New("Inbox ausente ou renomeada; execute emergence inbox")
+	}
+	if !info.IsDir() {
+		return nil, errors.New("Inbox não é uma pasta; execute emergence inbox")
+	}
+	notesInfo, err := plain(v.notes())
+	if err != nil {
+		return nil, errors.New("a vault precisa estar desbloqueada")
+	}
+	if !notesInfo.IsDir() {
+		return nil, errors.New("a vault precisa estar desbloqueada")
+	}
+	paths := []string{}
+	err = filepath.WalkDir(v.notes(), func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == v.notes() {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return filepath.SkipDir
+		}
+		info, err := plain(path)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || !strings.EqualFold(filepath.Ext(d.Name()), ".md") {
+			return nil
+		}
+		rel, err := filepath.Rel(v.notes(), path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	slices.Sort(paths)
+	return paths, nil
+}
+
+func (v *Vault) reviewJournalPath() string { return v.meta("txn", "review.json") }
+
+func (v *Vault) readReviewJournal() (reviewJournal, error) {
+	b, err := os.ReadFile(v.reviewJournalPath())
+	if err != nil {
+		return reviewJournal{}, err
+	}
+	var journal reviewJournal
+	if err := json.Unmarshal(b, &journal); err != nil {
+		return reviewJournal{}, err
+	}
+	if journal.Operation != "review" || journal.Inbox == "" {
+		return reviewJournal{}, errors.New("diário de revisão inválido")
+	}
+	if err := validInbox(journal.Inbox); err != nil {
+		return reviewJournal{}, err
+	}
+	for _, f := range journal.Deletes {
+		if err := safePath(f.Name); err != nil {
+			return reviewJournal{}, err
+		}
+	}
+	for _, m := range journal.Moves {
+		if err := safePath(m.Source.Name); err != nil {
+			return reviewJournal{}, err
+		}
+		if err := safePath(m.Destination); err != nil {
+			return reviewJournal{}, err
+		}
+		if filepath.ToSlash(filepath.Dir(filepath.FromSlash(m.Destination))) != journal.Inbox {
+			return reviewJournal{}, errors.New("diário de revisão aponta para uma Inbox diferente")
+		}
+	}
+	return journal, nil
+}
+
+func (v *Vault) beginReview(deleteNames []string) (reviewJournal, error) {
+	if err := v.cleanInternal("cleanup"); err != nil {
+		return reviewJournal{}, err
+	}
+	if err := v.cleanInternal("prepare"); err != nil {
+		return reviewJournal{}, err
+	}
+	if exists(v.meta("txn")) {
+		if exists(v.reviewJournalPath()) {
+			return v.readReviewJournal()
+		}
+		return reviewJournal{}, errors.New("outra operação está incompleta; repita o mesmo comando")
+	}
+	if v.Inbox == "" {
+		return reviewJournal{}, errors.New("Inbox não configurada; execute emergence inbox")
+	}
+	inboxInfo, err := plain(v.inbox())
+	if err != nil || !inboxInfo.IsDir() {
+		return reviewJournal{}, errors.New("Inbox ausente ou renomeada; execute emergence inbox")
+	}
+	if rel, err := filepath.Rel(v.notes(), v.inbox()); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return reviewJournal{}, errors.New("Inbox não pode ficar dentro da pasta privada")
+	}
+	names, err := v.MarkdownNotes()
+	if err != nil {
+		return reviewJournal{}, err
+	}
+	all := map[string]reviewFile{}
+	for _, name := range names {
+		hash, size, err := digest(filepath.Join(v.notes(), filepath.FromSlash(name)))
+		if err != nil {
+			return reviewJournal{}, err
+		}
+		all[name] = reviewFile{Name: name, Hash: hash, Size: size}
+	}
+	selected := map[string]bool{}
+	for _, name := range deleteNames {
+		if err := safePath(name); err != nil {
+			return reviewJournal{}, err
+		}
+		if selected[name] {
+			return reviewJournal{}, fmt.Errorf("nota selecionada mais de uma vez: %s", name)
+		}
+		if _, ok := all[name]; !ok {
+			return reviewJournal{}, fmt.Errorf("nota selecionada não encontrada: %s", name)
+		}
+		selected[name] = true
+	}
+	journal := reviewJournal{Operation: "review", Inbox: v.Inbox}
+	seenDestinations := map[string]string{}
+	existingDestinations := map[string]string{}
+	inboxEntries, err := os.ReadDir(v.inbox())
+	if err != nil {
+		return reviewJournal{}, err
+	}
+	for _, inboxEntry := range inboxEntries {
+		path := filepath.Join(v.inbox(), inboxEntry.Name())
+		if _, err := plain(path); err != nil {
+			return reviewJournal{}, err
+		}
+		existingDestinations[strings.ToLower(inboxEntry.Name())] = inboxEntry.Name()
+	}
+	for _, name := range names {
+		file := all[name]
+		if selected[name] {
+			journal.Deletes = append(journal.Deletes, file)
+			continue
+		}
+		base := filepath.Base(filepath.FromSlash(name))
+		destination := filepath.ToSlash(filepath.Join(filepath.FromSlash(v.Inbox), base))
+		if previous, ok := seenDestinations[strings.ToLower(base)]; ok {
+			return reviewJournal{}, fmt.Errorf("colisão de nomes entre %s e %s", previous, name)
+		}
+		seenDestinations[strings.ToLower(base)] = name
+		if existing, ok := existingDestinations[strings.ToLower(base)]; ok {
+			return reviewJournal{}, fmt.Errorf("colisão na Inbox: %s", filepath.Join(v.inbox(), existing))
+		}
+		journal.Moves = append(journal.Moves, reviewMove{Source: file, Destination: destination})
+	}
+	if err := os.Mkdir(v.meta("txn"), 0700); err != nil {
+		return reviewJournal{}, err
+	}
+	if err := writeJSON(v.reviewJournalPath(), journal); err != nil {
+		return reviewJournal{}, err
+	}
+	if err := syncDir(v.meta("txn")); err != nil {
+		return reviewJournal{}, err
+	}
+	return journal, v.checkpoint("review-begun")
+}
+
+func (v *Vault) applyReview(journal reviewJournal) error {
+	if journal.Inbox != v.Inbox {
+		return errors.New("a Inbox configurada mudou; preserve a transação e execute a revisão novamente")
+	}
+	for _, file := range journal.Deletes {
+		path := filepath.Join(v.notes(), filepath.FromSlash(file.Name))
+		if !exists(path) {
+			continue
+		}
+		hash, size, err := digest(path)
+		if err != nil {
+			return err
+		}
+		if hash != file.Hash || size != file.Size {
+			return fmt.Errorf("nota mudou; preservada: %s", file.Name)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("não foi possível apagar %s: %w", file.Name, err)
+		}
+		if err := v.checkpoint("review-deleted"); err != nil {
+			return err
+		}
+	}
+	for _, moveEntry := range journal.Moves {
+		source := filepath.Join(v.notes(), filepath.FromSlash(moveEntry.Source.Name))
+		destination := filepath.Join(v.Root, filepath.FromSlash(moveEntry.Destination))
+		if filepath.ToSlash(filepath.Dir(filepath.FromSlash(moveEntry.Destination))) != journal.Inbox {
+			return errors.New("destino de revisão fora da Inbox configurada")
+		}
+		if !exists(source) {
+			if !exists(destination) {
+				return fmt.Errorf("nota de origem desapareceu: %s", moveEntry.Source.Name)
+			}
+			hash, size, err := digest(destination)
+			if err != nil || hash != moveEntry.Source.Hash || size != moveEntry.Source.Size {
+				return fmt.Errorf("destino divergente na recuperação: %s", destination)
+			}
+			continue
+		}
+		hash, size, err := digest(source)
+		if err != nil {
+			return err
+		}
+		if hash != moveEntry.Source.Hash || size != moveEntry.Source.Size {
+			return fmt.Errorf("nota mudou; preservada: %s", moveEntry.Source.Name)
+		}
+		if exists(destination) {
+			return fmt.Errorf("colisão na Inbox: %s", destination)
+		}
+		if err := os.Rename(source, destination); err != nil {
+			return fmt.Errorf("não foi possível mover %s: %w", moveEntry.Source.Name, err)
+		}
+		if err := syncDir(filepath.Dir(destination)); err != nil {
+			return err
+		}
+		if err := v.checkpoint("review-moved"); err != nil {
+			return err
+		}
+	}
+	if err := move(v.meta("txn"), v.meta("cleanup")); err != nil {
+		return err
+	}
+	return v.cleanInternal("cleanup")
+}
+
+// Review applies the selected deletions and moves every remaining Markdown
+// note to the configured Inbox. An existing review journal is resumed.
+func (v *Vault) Review(deleteNames []string) error {
+	var journal reviewJournal
+	var err error
+	if v.ReviewInProgress() {
+		journal, err = v.readReviewJournal()
+	} else {
+		journal, err = v.beginReview(deleteNames)
+	}
+	if err != nil {
+		return err
+	}
+	return v.applyReview(journal)
+}
 func (v *Vault) checkpoint(name string) error {
 	if v.hook != nil {
 		return v.hook(name)
