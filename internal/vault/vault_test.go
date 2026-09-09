@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 )
@@ -528,6 +529,42 @@ func TestBackupRestoreRejectsUnsafeStates(t *testing.T) {
 	}
 	if exists(filepath.Join(destination, metadata)) {
 		t.Fatal("restore published after a collision")
+	}
+}
+
+func TestTodayCreatesExclusiveEmptyLocalNote(t *testing.T) {
+	v := fixture(t)
+	must(t, v.Unlock(testPassword))
+	fixed := time.Date(2026, time.September, 9, 23, 59, 0, 0, time.Local)
+	v.now = func() time.Time { return fixed }
+	name, err := v.Today()
+	must(t, err)
+	if name != "2026-09-09.md" || len(read(t, filepath.Join(v.notes(), name))) != 0 {
+		t.Fatalf("unexpected daily note: %q", name)
+	}
+	before := read(t, filepath.Join(v.notes(), name))
+	if _, err := v.Today(); err == nil {
+		t.Fatal("duplicate daily note accepted")
+	}
+	if !bytes.Equal(before, read(t, filepath.Join(v.notes(), name))) {
+		t.Fatal("duplicate daily note changed existing content")
+	}
+	put(t, filepath.Join(v.notes(), "2026-09-10.MD"), []byte("existing"))
+	v.now = func() time.Time { return fixed.Add(24 * time.Hour) }
+	if _, err := v.Today(); err == nil {
+		t.Fatal("case-insensitive collision accepted")
+	}
+}
+
+func TestTodayRejectsLockedOrIncompleteVault(t *testing.T) {
+	v := fixture(t)
+	if _, err := v.Today(); err == nil {
+		t.Fatal("today accepted a locked vault")
+	}
+	must(t, v.Unlock(testPassword))
+	must(t, os.Mkdir(v.meta("txn"), 0700))
+	if _, err := v.Today(); err == nil {
+		t.Fatal("today accepted an incomplete vault")
 	}
 }
 

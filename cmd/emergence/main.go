@@ -23,6 +23,7 @@ Uso:
   emergence unlock
   emergence lock
   emergence rotate-password
+  emergence today
   emergence backup --output <arquivo>
   emergence restore --input <arquivo>
   emergence status
@@ -106,7 +107,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return nil
 	}
 	command := args[0]
-	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "backup" && command != "restore" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "destroy" {
+	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "today" && command != "backup" && command != "restore" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "destroy" {
 		return fmt.Errorf("comando desconhecido: %s; use emergence help", command)
 	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -227,6 +228,14 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return err
 	}
 	defer v.Close()
+	if command == "today" {
+		name, err := v.Today()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Nota diária criada: %s\n", name)
+		return nil
+	}
 	if command == "backup" {
 		if output == "" {
 			return errors.New("informe um arquivo de saída com --output")

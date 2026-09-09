@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/gofrs/flock"
 )
@@ -65,6 +66,7 @@ type Vault struct {
 	Inbox  string
 	guard  *flock.Flock
 	hook   func(string) error // fault injection at durable transaction boundaries
+	now    func() time.Time
 }
 
 func validFolder(folder string) error {
@@ -332,7 +334,7 @@ func Open(start string) (*Vault, error) {
 	if !ok {
 		return nil, errors.New("outra operação está em andamento nesta vault")
 	}
-	return &Vault{Root: root, Folder: c.Folder, Inbox: c.Inbox, guard: guard}, nil
+	return &Vault{Root: root, Folder: c.Folder, Inbox: c.Inbox, guard: guard, now: time.Now}, nil
 }
 
 func (v *Vault) Close() error {
@@ -360,6 +362,60 @@ func (v *Vault) InboxPath() string { return v.Inbox }
 
 func (v *Vault) InboxCandidates() ([]string, error) {
 	return FindInboxCandidates(v.Root, v.Folder)
+}
+
+// Today creates an empty, exclusive Markdown note for the local calendar
+// date. It requires the private folder to be open and relies on Open's guard
+// so concurrent Emergence operations cannot interleave with the creation.
+func (v *Vault) Today() (string, error) {
+	for _, name := range []string{"txn", "prepare", "cleanup"} {
+		if exists(v.meta(name)) {
+			return "", errors.New("há uma operação incompleta; recupere-a antes de criar a nota diária")
+		}
+	}
+	notesInfo, err := plain(v.notes())
+	if err != nil {
+		return "", errors.New("a vault precisa estar desbloqueada")
+	}
+	if !notesInfo.IsDir() {
+		return "", errors.New("a pasta privada está em conflito; preserve os dados antes de continuar")
+	}
+	clock := v.now
+	if clock == nil {
+		clock = time.Now
+	}
+	name := clock().In(time.Local).Format("2006-01-02") + ".md"
+	if err := safePath(name); err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(v.notes())
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), name) {
+			return "", fmt.Errorf("a nota de hoje já existe: %s", filepath.Join(v.notes(), entry.Name()))
+		}
+	}
+	path := filepath.Join(v.notes(), name)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			return "", fmt.Errorf("a nota de hoje já existe: %s", path)
+		}
+		return "", err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	if err := syncDir(v.notes()); err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 func (v *Vault) saveConfig() error {

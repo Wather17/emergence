@@ -195,3 +195,31 @@ func TestReviewDryRunCommandDoesNotMutate(t *testing.T) {
 		t.Fatal("dry-run moved the note")
 	}
 }
+
+func TestTodayCommandDoesNotPrompt(t *testing.T) {
+	root := t.TempDir()
+	if err := vault.Init(root, "Morning Pages", "today password"); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Unlock("today password"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	var out bytes.Buffer
+	if err := run([]string{"today"}, &out, func(string) (string, error) {
+		t.Fatal("today requested a password")
+		return "", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Nota diária criada:") {
+		t.Fatalf("unexpected today output: %s", out.String())
+	}
+}
