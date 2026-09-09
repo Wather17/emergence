@@ -781,7 +781,7 @@ func TestReviewDeletesAndMovesMarkdown(t *testing.T) {
 	put(t, filepath.Join(v.notes(), "delete.md"), []byte("delete"))
 	put(t, filepath.Join(v.notes(), "nested", "move.MD"), []byte("nested"))
 	put(t, filepath.Join(v.notes(), "attachment.bin"), []byte{1, 2, 3})
-	must(t, v.Review([]string{"delete.md"}))
+	must(t, v.ReviewWithPassword([]string{"delete.md"}, testPassword))
 	if exists(filepath.Join(v.notes(), "delete.md")) {
 		t.Fatal("selected note was not deleted")
 	}
@@ -795,6 +795,125 @@ func TestReviewDeletesAndMovesMarkdown(t *testing.T) {
 	must(t, v.Unlock(testPassword))
 	if !exists(filepath.Join(v.notes(), "attachment.bin")) {
 		t.Fatal("remaining non-Markdown file was not preserved")
+	}
+}
+
+func TestTrashLifecycleKeepsMetadataAndRestoresBytes(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	must(t, v.Unlock(testPassword))
+	want := []byte("conteúdo secreto com acentos: café ☕\n")
+	put(t, filepath.Join(v.notes(), "ideias", "café.md"), want)
+	must(t, v.ReviewWithPassword([]string{"ideias/café.md"}, testPassword))
+	entries, err := v.TrashList(testPassword)
+	must(t, err)
+	if len(entries) != 1 || entries[0].Name != "ideias/café.md" || entries[0].Size != int64(len(want)) {
+		t.Fatalf("unexpected quarantine metadata: %#v", entries)
+	}
+	if bytes.Contains(read(t, v.meta("trash.age")), want) {
+		t.Fatal("quarantine leaked plaintext")
+	}
+	id := entries[0].ID
+	must(t, v.Lock(testPassword))
+	must(t, v.Close())
+	v, err = Open(root)
+	must(t, err)
+	defer v.Close()
+	entries, err = v.TrashList(testPassword)
+	must(t, err)
+	if len(entries) != 1 || entries[0].ID != id {
+		t.Fatalf("quarantine did not survive relock: %#v", entries)
+	}
+	must(t, v.Unlock(testPassword))
+	must(t, v.TrashRestore(id, testPassword))
+	if !bytes.Equal(read(t, filepath.Join(v.notes(), "ideias", "café.md")), want) {
+		t.Fatal("restored note changed bytes")
+	}
+	entries, err = v.TrashList(testPassword)
+	must(t, err)
+	if len(entries) != 0 {
+		t.Fatalf("restored entry remained in quarantine: %#v", entries)
+	}
+	must(t, v.Lock(testPassword))
+	must(t, v.TrashEmpty(testPassword))
+	if exists(v.meta("trash.age")) {
+		t.Fatal("trash empty left the quarantine archive")
+	}
+}
+
+func TestTrashRejectsWrongPasswordAndCollisions(t *testing.T) {
+	v := fixture(t)
+	must(t, os.Mkdir(filepath.Join(v.Root, "Inbox"), 0700))
+	must(t, v.SetInbox("Inbox"))
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "note.md"), []byte("note"))
+	must(t, v.ReviewWithPassword([]string{"note.md"}, testPassword))
+	entries, err := v.TrashList(testPassword)
+	must(t, err)
+	if len(entries) != 1 {
+		t.Fatal("missing quarantine entry")
+	}
+	if _, err := v.TrashList("wrong"); err == nil {
+		t.Fatal("wrong quarantine password accepted")
+	}
+	archiveBefore := read(t, v.meta("trash.age"))
+	put(t, filepath.Join(v.notes(), "note.md"), []byte("different"))
+	if err := v.TrashRestore(entries[0].ID, testPassword); err == nil {
+		t.Fatal("restore overwrote a colliding note")
+	}
+	if string(read(t, filepath.Join(v.notes(), "note.md"))) != "different" {
+		t.Fatal("collision changed the destination")
+	}
+	if !bytes.Equal(archiveBefore, read(t, v.meta("trash.age"))) {
+		t.Fatal("collision changed the quarantine")
+	}
+}
+
+func TestTrashRotationRejectsOldPassword(t *testing.T) {
+	v := fixture(t)
+	must(t, os.Mkdir(filepath.Join(v.Root, "Inbox"), 0700))
+	must(t, v.SetInbox("Inbox"))
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "delete.md"), []byte("delete me"))
+	must(t, v.ReviewWithPassword([]string{"delete.md"}, testPassword))
+	must(t, v.Lock(testPassword))
+	must(t, v.RotatePassword(testPassword, "rotated password"))
+	if _, err := v.TrashList(testPassword); err == nil {
+		t.Fatal("old password still opens trash")
+	}
+	entries, err := v.TrashList("rotated password")
+	must(t, err)
+	if len(entries) != 1 {
+		t.Fatal("rotated quarantine entry missing")
+	}
+}
+
+func TestBackupRestorePreservesTrash(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "delete.md"), []byte("backup me"))
+	must(t, v.ReviewWithPassword([]string{"delete.md"}, testPassword))
+	must(t, v.Lock(testPassword))
+	backup := filepath.Join(t.TempDir(), "vault.age")
+	must(t, v.Backup(backup, testPassword))
+	must(t, v.Close())
+	destination := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(destination, "Inbox"), 0700))
+	must(t, Restore(destination, backup, testPassword))
+	restored, err := Open(destination)
+	must(t, err)
+	defer restored.Close()
+	entries, err := restored.TrashList(testPassword)
+	must(t, err)
+	if len(entries) != 1 || entries[0].Name != "delete.md" {
+		t.Fatalf("backup did not preserve trash: %#v", entries)
 	}
 }
 
@@ -918,14 +1037,14 @@ func TestReviewResumesJournal(t *testing.T) {
 		}
 		return nil
 	}
-	if err := v.Review([]string{"delete.md"}); !errors.Is(err, stop) {
+	if err := v.ReviewWithPassword([]string{"delete.md"}, testPassword); !errors.Is(err, stop) {
 		t.Fatalf("expected interruption: %v", err)
 	}
 	if !v.ReviewInProgress() || exists(filepath.Join(v.notes(), "delete.md")) == true {
 		t.Fatal("review journal did not preserve resumable state")
 	}
 	v.hook = nil
-	must(t, v.Review(nil))
+	must(t, v.ReviewWithPassword(nil, testPassword))
 	if exists(v.meta("txn")) || exists(filepath.Join(v.notes(), "keep.md")) || !exists(filepath.Join(root, "Inbox", "keep.md")) {
 		t.Fatal("review recovery did not finish")
 	}

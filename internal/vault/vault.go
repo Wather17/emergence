@@ -770,9 +770,87 @@ func (v *Vault) ReviewPlan(deleteNames []string) ([]ReviewPlanEntry, error) {
 	return v.ReviewPlanWithFilter(deleteNames, ReviewFilter{})
 }
 
-func (v *Vault) applyReview(journal reviewJournal) error {
+func (v *Vault) trashContainsDeletes(journal reviewJournal, password string) (bool, error) {
+	if len(journal.Deletes) == 0 {
+		return true, nil
+	}
+	if !exists(trashPath(v)) {
+		return false, nil
+	}
+	manifest, _, err := readTrashArchiveAll(trashPath(v), password)
+	if err != nil {
+		return false, err
+	}
+	for _, file := range journal.Deletes {
+		found := false
+		for _, entry := range manifest.Entries {
+			if entry.Name == file.Name && entry.Hash == file.Hash && entry.Size == file.Size {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (v *Vault) publishTrash(password string) error {
+	next := v.meta("txn", "trash-next.age")
+	if !exists(next) {
+		return nil
+	}
+	if _, _, err := readTrashArchiveAll(next, password); err != nil {
+		return fmt.Errorf("quarentena preparada inválida: %w", err)
+	}
+	previous := v.meta("txn", "trash-previous.age")
+	current := trashPath(v)
+	if exists(current) && !exists(previous) {
+		if err := move(current, previous); err != nil {
+			return err
+		}
+		if err := v.checkpoint("trash-previous-moved"); err != nil {
+			return err
+		}
+	}
+	if exists(current) && exists(previous) {
+		return errors.New("estado de publicação da quarentena é ambíguo; preserve a transação")
+	}
+	if !exists(current) {
+		if err := move(next, current); err != nil {
+			return err
+		}
+		if err := v.checkpoint("trash-published"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (v *Vault) applyReview(journal reviewJournal, password string) error {
 	if journal.Inbox != v.Inbox {
 		return errors.New("a Inbox configurada mudou; preserve a transação e execute a revisão novamente")
+	}
+	if len(journal.Deletes) > 0 {
+		if password == "" {
+			return errors.New("a senha é necessária para criar a quarentena")
+		}
+		published, err := v.trashContainsDeletes(journal, password)
+		if err != nil {
+			return err
+		}
+		if !published {
+			if err := v.prepareTrash(journal, password); err != nil {
+				return err
+			}
+			if err := v.checkpoint("trash-prepared"); err != nil {
+				return err
+			}
+			if err := v.publishTrash(password); err != nil {
+				return err
+			}
+		}
 	}
 	for _, file := range journal.Deletes {
 		path := filepath.Join(v.notes(), filepath.FromSlash(file.Name))
@@ -836,15 +914,27 @@ func (v *Vault) applyReview(journal reviewJournal) error {
 }
 
 // Review applies the selected deletions and moves every remaining Markdown
-// note to the configured Inbox. An existing review journal is resumed.
+// note to the configured Inbox. Deletions require ReviewWithPassword; an
+// existing journal is resumed.
 func (v *Vault) Review(deleteNames []string) error {
-	return v.ReviewWithFilter(deleteNames, ReviewFilter{})
+	return v.ReviewWithPassword(deleteNames, "")
 }
 
 // ReviewWithFilter applies the selected deletions and moves every remaining
 // filtered Markdown note to the configured Inbox. An existing journal is
 // always resumed as-is, preserving its original snapshot.
 func (v *Vault) ReviewWithFilter(deleteNames []string, filter ReviewFilter) error {
+	return v.ReviewWithFilterAndPassword(deleteNames, filter, "")
+}
+
+// ReviewWithPassword applies a review and authenticates any selected deletion
+// before moving its bytes into the encrypted quarantine.
+func (v *Vault) ReviewWithPassword(deleteNames []string, password string) error {
+	return v.ReviewWithFilterAndPassword(deleteNames, ReviewFilter{}, password)
+}
+
+// ReviewWithFilterAndPassword is the password-authenticated review entrypoint.
+func (v *Vault) ReviewWithFilterAndPassword(deleteNames []string, filter ReviewFilter, password string) error {
 	var journal reviewJournal
 	var err error
 	if v.ReviewInProgress() {
@@ -855,7 +945,7 @@ func (v *Vault) ReviewWithFilter(deleteNames []string, filter ReviewFilter) erro
 	if err != nil {
 		return err
 	}
-	return v.applyReview(journal)
+	return v.applyReview(journal, password)
 }
 func (v *Vault) checkpoint(name string) error {
 	if v.hook != nil {
@@ -971,6 +1061,74 @@ func (v *Vault) ValidatePassword(password string) error {
 	}
 	if _, err := decrypt(v.meta("sealed.age"), password, ""); err != nil {
 		return err
+	}
+	return nil
+}
+
+// rotateTrash re-encrypts the optional quarantine archive using the same
+// resumable publication pattern as sealed.age. The old archive remains in
+// txn/trash-previous.age until the complete transaction is finished.
+func (v *Vault) rotateTrash(currentPassword, newPassword string) error {
+	current := trashPath(v)
+	previous := v.meta("txn", "trash-previous.age")
+	next := v.meta("txn", "trash-next.age")
+	if !exists(current) && !exists(previous) && !exists(next) {
+		return nil
+	}
+	// A published candidate plus its previous archive means the operation
+	// already committed; avoid re-encrypting it on a retry.
+	if exists(current) && exists(previous) && !exists(next) {
+		if _, _, err := readTrashArchiveAll(current, newPassword); err == nil {
+			return nil
+		}
+		return errors.New("estado de publicação da quarentena é ambíguo; preserve a transação")
+	}
+	source := current
+	if exists(previous) {
+		source = previous
+	}
+	if _, _, err := readTrashArchiveAll(source, currentPassword); err != nil {
+		return fmt.Errorf("quarentena inválida ou senha incorreta: %w", err)
+	}
+	if exists(next) {
+		if _, _, err := readTrashArchiveAll(next, newPassword); err != nil {
+			if err := os.Remove(next); err != nil {
+				return err
+			}
+		}
+	}
+	if !exists(next) {
+		if _, err := reencrypt(source, next, currentPassword, newPassword); err != nil {
+			return err
+		}
+		if _, _, err := readTrashArchiveAll(next, newPassword); err != nil {
+			return fmt.Errorf("nova quarentena não pôde ser autenticada: %w", err)
+		}
+		if err := v.checkpoint("trash-encrypted"); err != nil {
+			return err
+		}
+	}
+	if exists(current) && !exists(previous) {
+		if err := move(current, previous); err != nil {
+			return err
+		}
+		if err := v.checkpoint("trash-previous-moved"); err != nil {
+			return err
+		}
+	}
+	if exists(current) && exists(previous) {
+		return errors.New("estado de publicação da quarentena é ambíguo; preserve a transação")
+	}
+	if !exists(current) {
+		if err := move(next, current); err != nil {
+			return err
+		}
+		if err := v.checkpoint("trash-committed"); err != nil {
+			return err
+		}
+	}
+	if _, _, err := readTrashArchiveAll(current, newPassword); err != nil {
+		return fmt.Errorf("quarentena publicada não pôde ser autenticada: %w", err)
 	}
 	return nil
 }
@@ -1107,6 +1265,9 @@ func (v *Vault) RotatePassword(currentPassword, newPassword string) error {
 		if err := v.checkpoint("committed"); err != nil {
 			return err
 		}
+	}
+	if err := v.rotateTrash(currentPassword, newPassword); err != nil {
+		return err
 	}
 	if _, err := decrypt(sealed, newPassword, ""); err != nil {
 		return fmt.Errorf("arquivo publicado não pôde ser autenticado: %w", err)

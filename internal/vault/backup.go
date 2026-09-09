@@ -170,7 +170,7 @@ func (v *Vault) Backup(output, password string) error {
 		if _, err := checkRegular(v.meta("trash.age")); err != nil {
 			return fmt.Errorf("trash.age inválido: %w", err)
 		}
-		if _, err := decrypt(v.meta("trash.age"), password, ""); err != nil {
+		if _, _, err := readTrashArchiveAll(v.meta("trash.age"), password); err != nil {
 			return fmt.Errorf("trash.age inválido: %w", err)
 		}
 		files = append(files, "trash.age")
@@ -285,7 +285,7 @@ func Restore(root, input, password string) error {
 		return fmt.Errorf("sealed.age do bundle é inválido: %w", err)
 	}
 	if exists(filepath.Join(stage, "trash.age")) {
-		if _, err := decrypt(filepath.Join(stage, "trash.age"), password, ""); err != nil {
+		if _, _, err := readTrashArchiveAll(filepath.Join(stage, "trash.age"), password); err != nil {
 			return fmt.Errorf("trash.age do bundle é inválido: %w", err)
 		}
 	}

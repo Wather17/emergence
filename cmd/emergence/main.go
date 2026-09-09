@@ -32,6 +32,9 @@ Uso:
   emergence doctor [--check-archive]
   emergence inbox
   emergence review [--dry-run]
+  emergence trash list
+  emergence trash restore <id>
+  emergence trash empty
   emergence destroy
   emergence version
   emergence help
@@ -197,7 +200,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return nil
 	}
 	command := args[0]
-	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "today" && command != "backup" && command != "restore" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "destroy" {
+	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "today" && command != "backup" && command != "restore" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "trash" && command != "destroy" {
 		return fmt.Errorf("comando desconhecido: %s; use emergence help", command)
 	}
 	jsonOutput := hasFlag(args[1:], "--json")
@@ -223,6 +226,8 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	minSize := int64(-1)
 	maxSize := int64(-1)
 	pathPrefix := ""
+	trashAction := ""
+	trashID := ""
 	if command == "doctor" {
 		fs.BoolVar(&checkArchive, "check-archive", false, "autenticar e validar integralmente sealed.age")
 	}
@@ -252,7 +257,23 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		}
 		return err
 	}
-	if fs.NArg() != 0 {
+	if command == "trash" {
+		if fs.NArg() < 1 {
+			return errors.New("informe uma ação: list, restore <id> ou empty")
+		}
+		trashAction = fs.Arg(0)
+		if trashAction != "list" && trashAction != "empty" && trashAction != "restore" {
+			return fmt.Errorf("ação de trash desconhecida: %s", trashAction)
+		}
+		if trashAction == "restore" {
+			if fs.NArg() != 2 {
+				return errors.New("use emergence trash restore <id>")
+			}
+			trashID = fs.Arg(1)
+		} else if fs.NArg() != 1 {
+			return errors.New("essa ação não aceita argumentos extras")
+		}
+	} else if fs.NArg() != 0 {
 		return errors.New("argumentos inesperados; use emergence help")
 	}
 	reviewFilter := vault.ReviewFilter{}
@@ -363,6 +384,55 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return err
 	}
 	defer v.Close()
+	if command == "trash" {
+		switch trashAction {
+		case "list":
+			p, err := ask("Senha: ")
+			if err != nil {
+				return err
+			}
+			entries, err := v.TrashList(p)
+			if err != nil {
+				return err
+			}
+			if len(entries) == 0 {
+				fmt.Fprintln(out, "Quarentena vazia.")
+				return nil
+			}
+			fmt.Fprintln(out, "Notas na quarentena:")
+			for _, entry := range entries {
+				fmt.Fprintf(out, "  %s  %s (%d bytes, %s)\n", entry.ID, entry.Name, entry.Size, entry.DeletedAt.Local().Format("2006-01-02 15:04:05 -07:00"))
+			}
+			return nil
+		case "restore":
+			p, err := ask("Senha: ")
+			if err != nil {
+				return err
+			}
+			if err := v.TrashRestore(trashID, p); err != nil {
+				return err
+			}
+			fmt.Fprintln(out, "Nota restaurada da quarentena.")
+			return nil
+		case "empty":
+			p, err := ask("Senha: ")
+			if err != nil {
+				return err
+			}
+			confirm, err := ask("Digite EMPTY TRASH para confirmar: ")
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(confirm) != "EMPTY TRASH" {
+				return errors.New("confirmação incorreta; quarentena preservada")
+			}
+			if err := v.TrashEmpty(p); err != nil {
+				return err
+			}
+			fmt.Fprintln(out, "Quarentena esvaziada.")
+			return nil
+		}
+	}
 	if command == "today" {
 		name, err := v.Today()
 		if err != nil {
@@ -450,7 +520,11 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 				return errors.New("há uma revisão incompleta; dry-run não pode retomar uma transação")
 			}
 			fmt.Fprintln(out, "Retomando revisão incompleta...")
-			if err := v.Review(nil); err != nil {
+			p, err := ask("Senha para a quarentena: ")
+			if err != nil {
+				return err
+			}
+			if err := v.ReviewWithPassword(nil, p); err != nil {
 				return err
 			}
 			fmt.Fprintln(out, "Revisão concluída.")
@@ -524,7 +598,15 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 			fmt.Fprintln(out, "Revisão cancelada.")
 			return nil
 		}
-		if err := v.ReviewWithFilter(selected, reviewFilter); err != nil {
+		if len(selected) > 0 {
+			p, err := ask("Senha para a quarentena: ")
+			if err != nil {
+				return err
+			}
+			if err := v.ReviewWithFilterAndPassword(selected, reviewFilter, p); err != nil {
+				return err
+			}
+		} else if err := v.ReviewWithFilter(selected, reviewFilter); err != nil {
 			return err
 		}
 		fmt.Fprintln(out, "Revisão concluída.")

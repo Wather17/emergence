@@ -69,7 +69,17 @@ Para investigar uma vault sem alterar notas ou metadata, use `emergence doctor`.
 
 Na inicialização, o CLI procura pastas cujo nome contenha `Inbox` (sem diferenciar maiúsculas). Uma única candidata vira a Inbox padrão; com várias, escolha explicitamente com `emergence inbox`, que lista as opções e salva a seleção. Sem candidatas, crie uma pasta e execute esse comando depois.
 
-Com a pasta privada aberta, `emergence review` lista recursivamente apenas notas `.md`, em ordem determinística. Informe os números que deseja apagar (vazio mantém todas; `cancelar` aborta), confirme a operação e as notas mantidas serão movidas diretamente para a raiz da Inbox, conservando apenas o nome do arquivo. Arquivos não Markdown permanecem na pasta privada. Colisões de nomes na Inbox abortam tudo antes da primeira alteração. Use `emergence review --dry-run` para gerar o mesmo plano de exclusões e movimentações, com tamanhos e hashes, sem criar transação nem alterar arquivos; esse modo ainda pede a seleção das notas.
+Com a pasta privada aberta, `emergence review` lista recursivamente apenas notas `.md`, em ordem determinística. Informe os números que deseja apagar (vazio mantém todas; `cancelar` aborta), confirme a operação e digite a senha para a quarentena. Antes da primeira remoção, as notas selecionadas são copiadas e autenticadas em `.emergence/trash.age`; as demais são movidas diretamente para a raiz da Inbox, conservando apenas o nome do arquivo. Arquivos não Markdown permanecem na pasta privada. Colisões de nomes na Inbox abortam tudo antes da primeira alteração. Use `emergence review --dry-run` para gerar o mesmo plano de exclusões e movimentações, com tamanhos e hashes, sem criar transação nem alterar arquivos; esse modo ainda pede a seleção das notas.
+
+A quarentena permite revisar uma exclusão antes do apagamento definitivo:
+
+```powershell
+emergence trash list
+emergence trash restore <id>
+emergence trash empty
+```
+
+`trash list` mostra apenas ID, caminho original, data e tamanho. `trash restore` exige a pasta privada aberta, recusa colisões e remove somente a entrada restaurada depois de verificar os bytes. `trash empty` exige a senha e a frase literal `EMPTY TRASH`; ele remove somente `trash.age`. O arquivo pode crescer até o tamanho das notas excluídas, então esvazie-o conscientemente quando não precisar mais da recuperação.
 
 Para revisar um subconjunto, combine `--before YYYY-MM-DD` (limite exclusivo), `--after YYYY-MM-DD` (inclusivo), `--min-size BYTES`, `--max-size BYTES` e `--path subpasta`. As datas usam o fuso local e os tamanhos são bytes; caminhos são relativos à pasta privada e não aceitam `..`. A listagem mostra tamanho e data de modificação para tornar os filtros auditáveis.
 
@@ -93,6 +103,7 @@ Minha Vault/
   .emergence/
     config.json       # versão e nome da pasta
     sealed.age        # TAR criptografado: conteúdo, nomes e subpastas
+    trash.age         # quarentena age/TAR versionada das exclusões do review
     operation.lock    # trava entre processos; pode permanecer após o uso
   Morning Pages/      # presente apenas enquanto aberta, ou numa falha incompleta
 ```
@@ -119,7 +130,7 @@ Mantenha bundles criados por `emergence backup` **depois de um fechamento conclu
 
 ## Falhas e recuperação
 
-Durante uma operação, `.emergence/txn/` guarda o registro, temporários e, no fechamento ou na rotação de senha, a versão criptografada anterior. O CLI só remove notas depois de gravar, fechar, reler e autenticar o novo arquivo. Duas instâncias nativas não operam na mesma vault ao mesmo tempo; a trava é liberada pelo sistema quando o processo termina.
+Durante uma operação, `.emergence/txn/` guarda o registro, temporários e, no fechamento, review ou rotação de senha, a versão criptografada anterior. No review, a quarentena é publicada e autenticada antes de qualquer fonte ser removida; repita `emergence review` para retomar uma interrupção. Para restauração interrompida, repita `emergence trash restore <id>`. O CLI só remove notas depois de gravar, fechar, reler e autenticar o novo arquivo. Duas instâncias nativas não operam na mesma vault ao mesmo tempo; a trava é liberada pelo sistema quando o processo termina.
 
 Se um comando for interrompido:
 
@@ -136,6 +147,7 @@ Para recuperação manual, trabalhe exclusivamente nessa cópia:
 - `sealed.age`, quando presente, é a versão criptografada publicada.
 - `txn/previous.age`, quando presente, contém a versão anterior ao fechamento interrompido.
 - `txn/next.age`, quando presente e íntegro, contém a tentativa de novo fechamento ou rotação. Pode estar incompleto; só use se a descriptografia terminar com sucesso.
+- `trash.age` contém a quarentena criptografada. `txn/trash-next.age` e `txn/trash-previous.age` só devem existir durante review ou rotação interrompidos; preserve-os e repita o comando correspondente.
 - A pasta aberta pode conter edições mais recentes que esses arquivos. Preserve-a e compare os conflitos manualmente.
 
 Com o [CLI age](https://github.com/FiloSottile/age) instalado separadamente, descriptografe cada candidato para um TAR diferente, usando um diretório de recuperação vazio fora da vault:
