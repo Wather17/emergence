@@ -380,6 +380,82 @@ func TestDoctorCheckArchiveDoesNotCreatePlaintext(t *testing.T) {
 	}
 }
 
+func TestRotatePasswordPreservesArchive(t *testing.T) {
+	v := fixture(t)
+	want := populate(t, v)
+	must(t, v.Lock(testPassword))
+	before := read(t, v.meta("sealed.age"))
+	must(t, v.RotatePassword(testPassword, "a new passphrase"))
+	if bytes.Equal(before, read(t, v.meta("sealed.age"))) {
+		t.Fatal("rotation did not publish a new archive")
+	}
+	if err := v.ValidatePassword(testPassword); err == nil {
+		t.Fatal("old password still authenticates")
+	}
+	must(t, v.ValidatePassword("a new passphrase"))
+	must(t, v.Unlock("a new passphrase"))
+	got, err := snapshot(v.notes())
+	must(t, err)
+	if !same(got, want) {
+		t.Fatal("rotation changed archive contents")
+	}
+}
+
+func TestRotatePasswordRejectsInvalidPreconditions(t *testing.T) {
+	v := fixture(t)
+	before := read(t, v.meta("sealed.age"))
+	if err := v.RotatePassword("wrong", "new"); err == nil {
+		t.Fatal("wrong current password accepted")
+	}
+	if !bytes.Equal(before, read(t, v.meta("sealed.age"))) || exists(v.meta("txn")) {
+		t.Fatal("failed rotation changed vault state")
+	}
+	must(t, v.Unlock(testPassword))
+	if err := v.RotatePassword(testPassword, "new"); err == nil {
+		t.Fatal("rotation accepted an open vault")
+	}
+}
+
+func TestRotatePasswordRecoversEveryPublicationStage(t *testing.T) {
+	for _, point := range []string{"begun", "encrypted", "previous-moved", "committed", "verified-published", "finished"} {
+		t.Run(point, func(t *testing.T) {
+			v := fixture(t)
+			want := populate(t, v)
+			must(t, v.Lock(testPassword))
+			stop := errors.New("simulated interruption")
+			v.hook = func(p string) error {
+				if p == point {
+					return stop
+				}
+				return nil
+			}
+			if err := v.RotatePassword(testPassword, "rotated"); !errors.Is(err, stop) {
+				t.Fatalf("expected interruption: %v", err)
+			}
+			if exists(v.notes()) {
+				t.Fatal("rotation opened plaintext notes")
+			}
+			for _, name := range []string{"journal.json", "next.age", "previous.age"} {
+				if b, err := os.ReadFile(v.meta("txn", name)); err == nil && (bytes.Contains(b, []byte(testPassword)) || bytes.Contains(b, []byte("rotated"))) {
+					t.Fatalf("password leaked into transaction file %s", name)
+				}
+			}
+			v.hook = nil
+			must(t, v.Close())
+			reopened, err := Open(v.Root)
+			must(t, err)
+			*v = *reopened
+			must(t, v.RotatePassword(testPassword, "rotated"))
+			must(t, v.Unlock("rotated"))
+			got, err := snapshot(v.notes())
+			must(t, err)
+			if !same(got, want) {
+				t.Fatal("recovery changed archive contents")
+			}
+		})
+	}
+}
+
 func TestInitRejectsExistingFolder(t *testing.T) {
 	root := t.TempDir()
 	must(t, os.Mkdir(filepath.Join(root, "Morning Pages"), 0700))

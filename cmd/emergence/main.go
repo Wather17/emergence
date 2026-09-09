@@ -22,6 +22,7 @@ Uso:
   emergence init [--folder "Morning Pages"]
   emergence unlock
   emergence lock
+  emergence rotate-password
   emergence status
   emergence doctor [--check-archive]
   emergence inbox
@@ -103,7 +104,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return nil
 	}
 	command := args[0]
-	if command != "init" && command != "unlock" && command != "lock" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "destroy" {
+	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "destroy" {
 		return fmt.Errorf("comando desconhecido: %s; use emergence help", command)
 	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -198,6 +199,28 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return err
 	}
 	defer v.Close()
+	if command == "rotate-password" {
+		current, err := ask("Senha atual: ")
+		if err != nil {
+			return err
+		}
+		next, err := ask("Nova senha: ")
+		if err != nil {
+			return err
+		}
+		confirm, err := ask("Confirme a nova senha: ")
+		if err != nil {
+			return err
+		}
+		if next != confirm {
+			return errors.New("as senhas não coincidem")
+		}
+		if err := v.RotatePassword(current, next); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "Senha rotacionada com sucesso. Use a nova senha no próximo unlock.")
+		return nil
+	}
 	if command == "inbox" {
 		candidates, err := v.InboxCandidates()
 		if err != nil {

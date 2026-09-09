@@ -783,6 +783,148 @@ func (v *Vault) ValidatePassword(password string) error {
 	return nil
 }
 
+func readTransaction(dir string) (*transaction, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "journal.json"))
+	if err != nil {
+		return nil, err
+	}
+	var tx transaction
+	if err := json.Unmarshal(b, &tx); err != nil {
+		return nil, err
+	}
+	if tx.Operation == "" {
+		return nil, errors.New("diário de operação inválido")
+	}
+	for _, e := range tx.Entries {
+		if err := safePath(e.Name); err != nil {
+			return nil, err
+		}
+	}
+	return &tx, nil
+}
+
+// RotatePassword re-encrypts a locked vault without persisting either
+// password. Decryption and encryption are streamed directly between age/TAR
+// readers and a private encrypted candidate, and publication is resumable.
+func (v *Vault) RotatePassword(currentPassword, newPassword string) error {
+	if currentPassword == "" || newPassword == "" {
+		return errors.New("a senha não pode ser vazia")
+	}
+	if exists(v.notes()) {
+		info, err := plain(v.notes())
+		if err != nil {
+			return fmt.Errorf("a pasta privada está em conflito: %w", err)
+		}
+		if info.IsDir() {
+			return errors.New("a vault está aberta; execute lock antes de trocar a senha")
+		}
+		return errors.New("a pasta privada está em conflito; preserve os dados antes de trocar a senha")
+	}
+
+	// A failure after the transaction was moved to cleanup means publication
+	// already completed. Only remove the internal cleanup marker on retry.
+	if exists(v.meta("cleanup")) {
+		tx, err := readTransaction(v.meta("cleanup"))
+		if err != nil {
+			return err
+		}
+		if tx.Operation != "rotate-password" {
+			return fmt.Errorf("operação %s incompleta; repita emergence %s", tx.Operation, tx.Operation)
+		}
+		return v.cleanInternal("cleanup")
+	}
+	if exists(v.meta("prepare")) && !exists(v.meta("txn")) {
+		return errors.New("há uma operação incompleta; preserve a transação e repita rotate-password")
+	}
+
+	var tx *transaction
+	var err error
+	if exists(v.meta("txn")) {
+		tx, err = readTransaction(v.meta("txn"))
+		if err != nil {
+			return err
+		}
+		if tx.Operation != "rotate-password" {
+			return fmt.Errorf("operação %s incompleta; repita emergence %s", tx.Operation, tx.Operation)
+		}
+	} else {
+		entries, decryptErr := decrypt(v.meta("sealed.age"), currentPassword, "")
+		if decryptErr != nil {
+			return decryptErr
+		}
+		tx, err = v.begin("rotate-password", entries)
+		if err != nil {
+			return err
+		}
+	}
+
+	sealed := v.meta("sealed.age")
+	previous := v.meta("txn", "previous.age")
+	next := v.meta("txn", "next.age")
+	source := sealed
+	if exists(previous) {
+		source = previous
+	}
+	// Authenticate the old archive before using it as a stream source. This
+	// also lets a resumed transaction reject the wrong current password.
+	if _, err := decrypt(source, currentPassword, ""); err != nil {
+		return err
+	}
+
+	committed := exists(previous) && exists(sealed) && !exists(next)
+	verified := exists(v.meta("txn", "verified")) && (exists(next) || committed)
+	if !verified {
+		if exists(next) {
+			if err := os.Remove(next); err != nil {
+				return err
+			}
+		}
+		entries, err := reencrypt(source, next, currentPassword, newPassword)
+		if err != nil {
+			return err
+		}
+		if !same(entries, tx.Entries) {
+			return errors.New("conteúdo do arquivo mudou durante a rotação")
+		}
+		if _, err := decrypt(next, newPassword, ""); err != nil {
+			return fmt.Errorf("novo arquivo criptografado não pôde ser autenticado: %w", err)
+		}
+		if err := v.mark("verified"); err != nil {
+			return err
+		}
+		if err := v.checkpoint("encrypted"); err != nil {
+			return err
+		}
+	}
+
+	if exists(sealed) && !exists(previous) {
+		if err := move(sealed, previous); err != nil {
+			return err
+		}
+		if err := v.checkpoint("previous-moved"); err != nil {
+			return err
+		}
+	}
+	if exists(next) {
+		if exists(sealed) {
+			return errors.New("estado de publicação da rotação é ambíguo; preserve a transação")
+		}
+		if err := move(next, sealed); err != nil {
+			return err
+		}
+		if err := v.checkpoint("committed"); err != nil {
+			return err
+		}
+	}
+	if _, err := decrypt(sealed, newPassword, ""); err != nil {
+		return fmt.Errorf("arquivo publicado não pôde ser autenticado: %w", err)
+	}
+	if err := v.checkpoint("verified-published"); err != nil {
+		return err
+	}
+	return v.finish()
+}
+
 func (v *Vault) destroyMarker() string { return filepath.Join(v.Root, ".emergence-destroy") }
 
 func (v *Vault) readDestroyRecord() (destroyRecord, error) {

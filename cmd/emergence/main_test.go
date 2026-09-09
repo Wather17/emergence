@@ -92,3 +92,35 @@ func TestDoctorDoesNotPromptByDefault(t *testing.T) {
 		t.Fatalf("unexpected doctor output: %s", out.String())
 	}
 }
+
+func TestRotatePasswordPromptsAndPublishes(t *testing.T) {
+	root := t.TempDir()
+	if err := vault.Init(root, "Morning Pages", "old password"); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	answers := []string{"old password", "new password", "new password"}
+	index := 0
+	var out bytes.Buffer
+	if err := run([]string{"rotate-password"}, &out, func(string) (string, error) {
+		answer := answers[index]
+		index++
+		return answer, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "rotacionada") {
+		t.Fatalf("unexpected rotation output: %s", out.String())
+	}
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if err := v.ValidatePassword("old password"); err == nil {
+		t.Fatal("old password still accepted")
+	}
+	if err := v.ValidatePassword("new password"); err != nil {
+		t.Fatal(err)
+	}
+}
