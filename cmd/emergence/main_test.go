@@ -28,6 +28,45 @@ func TestUsageAndValidation(t *testing.T) {
 	}
 }
 
+func TestCompletionScriptsAreDeterministicAndStandalone(t *testing.T) {
+	required := []string{
+		"completion", "destroy", "doctor", "help", "inbox", "init", "lock", "restore", "review", "rotate-password", "status", "today", "trash", "unlock", "version",
+		"--folder", "--check-archive", "--output", "--input", "--dry-run", "--before", "--after", "--min-size", "--max-size", "--path", "--json",
+	}
+	for _, shell := range []string{"bash", "zsh", "powershell"} {
+		var first, second bytes.Buffer
+		if err := run([]string{"completion", shell}, &first, func(string) (string, error) {
+			t.Fatal("completion requested a password")
+			return "", nil
+		}); err != nil {
+			t.Fatalf("%s completion failed: %v", shell, err)
+		}
+		if err := run([]string{"completion", shell}, &second, func(string) (string, error) {
+			t.Fatal("completion requested a password")
+			return "", nil
+		}); err != nil {
+			t.Fatalf("%s completion failed on second run: %v", shell, err)
+		}
+		if first.Len() == 0 || !bytes.Equal(first.Bytes(), second.Bytes()) {
+			t.Fatalf("%s completion is empty or nondeterministic", shell)
+		}
+		for _, token := range required {
+			if !strings.Contains(first.String(), token) {
+				t.Fatalf("%s completion is missing %q", shell, token)
+			}
+		}
+	}
+	for _, args := range [][]string{{"completion"}, {"completion", "fish"}, {"completion", "bash", "extra"}} {
+		var out bytes.Buffer
+		if err := run(args, &out, func(string) (string, error) {
+			t.Fatal("invalid completion requested a password")
+			return "", nil
+		}); err == nil || out.Len() != 0 {
+			t.Fatalf("invalid completion accepted or emitted output: %v %q", err, out.String())
+		}
+	}
+}
+
 func TestDestroyRequiresInteractiveTerminal(t *testing.T) {
 	t.Chdir(t.TempDir())
 	err := run([]string{"destroy"}, &bytes.Buffer{}, func(string) (string, error) {
