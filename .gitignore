@@ -1,3 +1,11 @@
 /bin/
 /dist/
 /coverage.out
+# AI agent configuration files
+.agent-init.json
+AGENTS.md
+.agents/skills/audit-issues/SKILL.md
+.agents/skills/refine-issues/SKILL.md
+.agents/skills/autonomous-batch/SKILL.md
+# Synced GitHub issues
+issues/
