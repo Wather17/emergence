@@ -368,3 +368,74 @@ func TestOppositeCommandCannotResume(t *testing.T) {
 	}
 	must(t, v.Lock(testPassword))
 }
+
+func TestDestroyRemovesOpenPrivateState(t *testing.T) {
+	v := fixture(t)
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "morning.md"), []byte("private"))
+	put(t, filepath.Join(v.notes(), "attachment.bin"), []byte{1, 2, 3})
+	targets, err := v.DestroyTargets()
+	must(t, err)
+	if len(targets) != 2 || targets[0] != v.notes() || targets[1] != v.meta() {
+		t.Fatalf("unexpected targets: %#v", targets)
+	}
+	must(t, v.Destroy(testPassword))
+	if exists(v.notes()) || exists(v.meta()) || exists(filepath.Join(v.Root, ".emergence-destroy")) {
+		t.Fatal("destroy left a managed target behind")
+	}
+	if _, err := Open(v.Root); err == nil {
+		t.Fatal("destroyed vault can still be opened")
+	}
+}
+
+func TestDestroyAuthenticatesBeforeRemoval(t *testing.T) {
+	v := fixture(t)
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "morning.md"), []byte("private"))
+	if err := v.Destroy("wrong"); err == nil {
+		t.Fatal("wrong password accepted")
+	}
+	if !exists(v.notes()) || !exists(v.meta()) || exists(v.destroyMarker()) {
+		t.Fatal("failed authentication changed destroy targets")
+	}
+	if err := v.ValidateDestroyCwd(v.notes()); err == nil {
+		t.Fatal("destroy allowed from inside private folder")
+	}
+}
+
+func TestDestroyResumesFromMarker(t *testing.T) {
+	v := fixture(t)
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "morning.md"), []byte("private"))
+	stop := errors.New("simulated interruption")
+	v.hook = func(point string) error {
+		if point == "destroy-notes" {
+			return stop
+		}
+		return nil
+	}
+	if err := v.Destroy(testPassword); !errors.Is(err, stop) {
+		t.Fatalf("expected interruption: %v", err)
+	}
+	if exists(v.notes()) == true || !exists(v.meta()) || !exists(v.destroyMarker()) {
+		t.Fatal("interrupted destroy did not leave resumable state")
+	}
+	v.hook = nil
+	must(t, v.Destroy(testPassword))
+	if exists(v.meta()) || exists(v.destroyMarker()) {
+		t.Fatal("resumed destroy left metadata")
+	}
+}
+
+func TestDestroyRejectsInvalidArchive(t *testing.T) {
+	v := fixture(t)
+	sealed := v.meta("sealed.age")
+	backup := sealed + ".backup"
+	must(t, os.Rename(sealed, backup))
+	must(t, os.Mkdir(sealed, 0700))
+	if _, err := v.DestroyTargets(); err == nil {
+		t.Fatal("directory accepted as sealed.age")
+	}
+	must(t, os.Remove(sealed))
+	must(t, os.Rename(backup, sealed))
+}

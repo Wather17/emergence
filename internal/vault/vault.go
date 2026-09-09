@@ -23,6 +23,13 @@ type transaction struct {
 	Entries   []entry `json:"entries,omitempty"`
 }
 
+type destroyRecord struct {
+	Version  int    `json:"version"`
+	Root     string `json:"root"`
+	Notes    string `json:"notes"`
+	Metadata string `json:"metadata"`
+}
+
 type Vault struct {
 	Root   string
 	Folder string
@@ -166,7 +173,14 @@ func Open(start string) (*Vault, error) {
 	return &Vault{Root: root, Folder: c.Folder, guard: guard}, nil
 }
 
-func (v *Vault) Close() error { return v.guard.Close() }
+func (v *Vault) Close() error {
+	if v.guard == nil {
+		return nil
+	}
+	err := v.guard.Close()
+	v.guard = nil
+	return err
+}
 func (v *Vault) meta(parts ...string) string {
 	return filepath.Join(append([]string{v.Root, metadata}, parts...)...)
 }
@@ -196,6 +210,211 @@ func (v *Vault) Status() (string, error) {
 		return "aberta", nil
 	}
 	return "trancada", nil
+}
+
+// DestroyTargets returns the closed set of paths that destroy may remove. It
+// performs all structural validation before the destructive confirmation.
+func (v *Vault) DestroyTargets() ([]string, error) {
+	rootInfo, err := plain(v.Root)
+	if err != nil {
+		return nil, err
+	}
+	if !rootInfo.IsDir() {
+		return nil, errors.New("a raiz da vault não é uma pasta")
+	}
+	metadataInfo, err := plain(v.meta())
+	if err != nil {
+		return nil, fmt.Errorf("metadata inválida: %w", err)
+	}
+	if !metadataInfo.IsDir() {
+		return nil, errors.New("metadata inválida: .emergence não é uma pasta")
+	}
+	if exists(v.meta("txn")) || exists(v.meta("cleanup")) || exists(v.meta("prepare")) {
+		return nil, errors.New("há uma operação incompleta; recupere-a antes de destruir a vault")
+	}
+	sealedInfo, err := plain(v.meta("sealed.age"))
+	if err != nil {
+		return nil, fmt.Errorf("arquivo criptografado inválido: %w", err)
+	}
+	if !sealedInfo.Mode().IsRegular() {
+		return nil, errors.New("arquivo criptografado inválido: sealed.age não é um arquivo regular")
+	}
+	if err := validateTree(v.meta()); err != nil {
+		return nil, fmt.Errorf("metadata inválida: %w", err)
+	}
+	targets := []string{}
+	if exists(v.notes()) {
+		notesInfo, err := plain(v.notes())
+		if err != nil {
+			return nil, fmt.Errorf("pasta privada inválida: %w", err)
+		}
+		if !notesInfo.IsDir() {
+			return nil, errors.New("pasta privada inválida: o caminho não é uma pasta")
+		}
+		if err := validateTree(v.notes()); err != nil {
+			return nil, fmt.Errorf("pasta privada inválida: %w", err)
+		}
+		targets = append(targets, v.notes())
+	}
+	targets = append(targets, v.meta())
+	return targets, nil
+}
+
+// ValidateDestroyCwd prevents a process from removing the directory it is
+// currently using, while still allowing invocation from the vault root or any
+// ordinary sibling subfolder.
+func (v *Vault) ValidateDestroyCwd(start string) error {
+	abs, err := filepath.Abs(start)
+	if err != nil {
+		return err
+	}
+	for _, target := range []string{v.notes(), v.meta()} {
+		rel, err := filepath.Rel(target, abs)
+		if err != nil {
+			return err
+		}
+		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			return errors.New("execute destroy a partir da raiz ou de uma subpasta fora dos alvos")
+		}
+	}
+	return nil
+}
+
+// ValidatePassword authenticates the current sealed archive without writing
+// or removing anything.
+func (v *Vault) ValidatePassword(password string) error {
+	if password == "" {
+		return errors.New("a senha não pode ser vazia")
+	}
+	if _, err := decrypt(v.meta("sealed.age"), password, ""); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (v *Vault) destroyMarker() string { return filepath.Join(v.Root, ".emergence-destroy") }
+
+func (v *Vault) readDestroyRecord() (destroyRecord, error) {
+	b, err := os.ReadFile(v.destroyMarker())
+	if err != nil {
+		return destroyRecord{}, err
+	}
+	var record destroyRecord
+	if err := json.Unmarshal(b, &record); err != nil {
+		return destroyRecord{}, fmt.Errorf("marcador de destruição inválido: %w", err)
+	}
+	if record.Version != 1 || filepath.Clean(record.Root) != filepath.Clean(v.Root) ||
+		filepath.Clean(record.Metadata) != filepath.Clean(v.meta()) || filepath.Clean(record.Notes) != filepath.Clean(v.notes()) {
+		return destroyRecord{}, errors.New("marcador de destruição não corresponde a esta vault")
+	}
+	return record, nil
+}
+
+func (v *Vault) removeMetadata() error {
+	if err := validateTree(v.meta()); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(v.meta())
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == "operation.lock" {
+			continue
+		}
+		p := filepath.Join(v.meta(), e.Name())
+		if err := os.RemoveAll(p); err != nil {
+			return err
+		}
+	}
+	if err := syncDir(v.meta()); err != nil {
+		return err
+	}
+	if err := v.Close(); err != nil {
+		return err
+	}
+	if err := os.Remove(v.meta("operation.lock")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(v.meta()); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return syncDir(v.Root)
+}
+
+// Destroy irreversibly removes the private folder and Emergence metadata. A
+// marker outside the targets makes an interrupted removal explicit and allows
+// a later invocation on the still-open Vault object to continue safely.
+func (v *Vault) Destroy(password string) error {
+	if password == "" {
+		return errors.New("a senha não pode ser vazia")
+	}
+	marker := v.destroyMarker()
+	resuming := exists(marker)
+	var record destroyRecord
+	if resuming {
+		var err error
+		record, err = v.readDestroyRecord()
+		if err != nil {
+			return err
+		}
+		if exists(v.meta("sealed.age")) {
+			if err := v.ValidatePassword(password); err != nil {
+				return err
+			}
+		}
+		for _, p := range []string{record.Notes, record.Metadata} {
+			if exists(p) {
+				if err := validateTree(p); err != nil {
+					return err
+				}
+			}
+		}
+	} else {
+		targets, err := v.DestroyTargets()
+		if err != nil {
+			return err
+		}
+		if err := v.ValidatePassword(password); err != nil {
+			return err
+		}
+		record = destroyRecord{Version: 1, Root: v.Root, Notes: v.notes(), Metadata: v.meta()}
+		if len(targets) == 0 {
+			return errors.New("nenhum alvo de destruição foi encontrado")
+		}
+		if err := writeJSON(marker, record); err != nil {
+			return err
+		}
+		if err := syncDir(v.Root); err != nil {
+			return err
+		}
+	}
+	if err := v.checkpoint("destroy-prepared"); err != nil {
+		return err
+	}
+	if exists(record.Notes) {
+		if err := os.RemoveAll(record.Notes); err != nil {
+			return fmt.Errorf("destruição incompleta em %s: %w", record.Notes, err)
+		}
+		if err := syncDir(v.Root); err != nil {
+			return err
+		}
+	}
+	if err := v.checkpoint("destroy-notes"); err != nil {
+		return err
+	}
+	if exists(record.Metadata) {
+		if err := v.removeMetadata(); err != nil {
+			return fmt.Errorf("destruição incompleta em %s: %w", record.Metadata, err)
+		}
+	}
+	if err := v.checkpoint("destroy-metadata"); err != nil {
+		return err
+	}
+	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("destruição concluída, mas o marcador permaneceu: %w", err)
+	}
+	return syncDir(v.Root)
 }
 
 // Only internal staging directories are recursively removed. User notes are
