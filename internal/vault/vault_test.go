@@ -439,3 +439,112 @@ func TestDestroyRejectsInvalidArchive(t *testing.T) {
 	must(t, os.Remove(sealed))
 	must(t, os.Rename(backup, sealed))
 }
+
+func TestInitAndSelectInbox(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	defer v.Close()
+	if v.InboxPath() != "Inbox" {
+		t.Fatalf("expected automatic Inbox, got %q", v.InboxPath())
+	}
+
+	other := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(other, "Inbox A"), 0700))
+	must(t, os.Mkdir(filepath.Join(other, "myINBOX"), 0700))
+	must(t, Init(other, "Morning Pages", testPassword))
+	w, err := Open(other)
+	must(t, err)
+	defer w.Close()
+	if w.InboxPath() != "" {
+		t.Fatalf("multiple Inboxes should require selection, got %q", w.InboxPath())
+	}
+	candidates, err := w.InboxCandidates()
+	must(t, err)
+	if len(candidates) != 2 {
+		t.Fatalf("unexpected candidates: %#v", candidates)
+	}
+	must(t, w.SetInbox(candidates[1]))
+	if w.InboxPath() != candidates[1] {
+		t.Fatalf("selection was not persisted: %q", w.InboxPath())
+	}
+}
+
+func TestReviewDeletesAndMovesMarkdown(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	defer v.Close()
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "keep.md"), []byte("keep"))
+	put(t, filepath.Join(v.notes(), "delete.md"), []byte("delete"))
+	put(t, filepath.Join(v.notes(), "nested", "move.MD"), []byte("nested"))
+	put(t, filepath.Join(v.notes(), "attachment.bin"), []byte{1, 2, 3})
+	must(t, v.Review([]string{"delete.md"}))
+	if exists(filepath.Join(v.notes(), "delete.md")) {
+		t.Fatal("selected note was not deleted")
+	}
+	if !exists(filepath.Join(root, "Inbox", "keep.md")) || !exists(filepath.Join(root, "Inbox", "move.MD")) {
+		t.Fatal("kept notes were not moved to Inbox")
+	}
+	if !exists(filepath.Join(v.notes(), "attachment.bin")) {
+		t.Fatal("non-Markdown attachment was moved")
+	}
+	must(t, v.Lock(testPassword))
+	must(t, v.Unlock(testPassword))
+	if !exists(filepath.Join(v.notes(), "attachment.bin")) {
+		t.Fatal("remaining non-Markdown file was not preserved")
+	}
+}
+
+func TestReviewCollisionsPreserveNotes(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	defer v.Close()
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "keep.md"), []byte("private"))
+	put(t, filepath.Join(root, "Inbox", "keep.md"), []byte("existing"))
+	if err := v.Review(nil); err == nil {
+		t.Fatal("Inbox collision accepted")
+	}
+	if string(read(t, filepath.Join(v.notes(), "keep.md"))) != "private" || string(read(t, filepath.Join(root, "Inbox", "keep.md"))) != "existing" {
+		t.Fatal("collision changed files")
+	}
+}
+
+func TestReviewResumesJournal(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	defer v.Close()
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "delete.md"), []byte("delete"))
+	put(t, filepath.Join(v.notes(), "keep.md"), []byte("keep"))
+	stop := errors.New("simulated interruption")
+	v.hook = func(point string) error {
+		if point == "review-deleted" {
+			return stop
+		}
+		return nil
+	}
+	if err := v.Review([]string{"delete.md"}); !errors.Is(err, stop) {
+		t.Fatalf("expected interruption: %v", err)
+	}
+	if !v.ReviewInProgress() || exists(filepath.Join(v.notes(), "delete.md")) == true {
+		t.Fatal("review journal did not preserve resumable state")
+	}
+	v.hook = nil
+	must(t, v.Review(nil))
+	if exists(v.meta("txn")) || exists(filepath.Join(v.notes(), "keep.md")) || !exists(filepath.Join(root, "Inbox", "keep.md")) {
+		t.Fatal("review recovery did not finish")
+	}
+}

@@ -60,6 +60,10 @@ emergence status
 
 `lock` pede **a mesma senha**, verifica a nova cópia criptografada e remove os arquivos abertos. `status` informa `aberta`, `trancada` ou `incompleta`; não pede senha nem verifica a integridade criptográfica do arquivo.
 
+Na inicialização, o CLI procura pastas cujo nome contenha `Inbox` (sem diferenciar maiúsculas). Uma única candidata vira a Inbox padrão; com várias, escolha explicitamente com `emergence inbox`, que lista as opções e salva a seleção. Sem candidatas, crie uma pasta e execute esse comando depois.
+
+Com a pasta privada aberta, `emergence review` lista recursivamente apenas notas `.md`, em ordem determinística. Informe os números que deseja apagar (vazio mantém todas; `cancelar` aborta), confirme a operação e as notas mantidas serão movidas diretamente para a raiz da Inbox, conservando apenas o nome do arquivo. Arquivos não Markdown permanecem na pasta privada. Colisões de nomes na Inbox abortam tudo antes da primeira alteração.
+
 Para eliminar definitivamente todos os dados administrados pelo Emergence, use `emergence destroy` a partir da raiz ou de uma subpasta normal da vault. O comando só funciona em um terminal interativo: mostra os caminhos exatos, pede a senha sem eco e exige a frase sensível a maiúsculas `DESTROY <nome-da-pasta-privada>`. A confirmação valida a senha e todos os alvos antes de remover recursivamente a pasta privada (inclusive anexos e arquivos não Markdown) e `.emergence/`. Não há `--force`, senha por argumento ou entrada redirecionada. Nunca execute o comando de dentro da pasta privada ou de `.emergence`.
 
 Os comandos são iguais no Linux. `unlock`, `lock` e `status` também encontram a configuração quando executados em subpastas da vault. Execute o fechamento de uma pasta que continuará existindo, como a raiz da vault.

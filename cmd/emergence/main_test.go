@@ -34,6 +34,23 @@ func TestDestroyRequiresInteractiveTerminal(t *testing.T) {
 	}
 }
 
+func TestReviewSelectionParsing(t *testing.T) {
+	notes := []string{"a.md", "nested/b.md", "c.MD"}
+	selected, canceled, err := parseSelection("1, 3", notes)
+	if err != nil || canceled || strings.Join(selected, ",") != "a.md,c.MD" {
+		t.Fatalf("unexpected selection: %#v %v %v", selected, canceled, err)
+	}
+	if _, canceled, err := parseSelection("cancelar", notes); err != nil || !canceled {
+		t.Fatalf("cancel was not recognized: %v %v", canceled, err)
+	}
+	if _, _, err := parseSelection("0", notes); err == nil {
+		t.Fatal("zero selection accepted")
+	}
+	if confirmed("sim") != true || confirmed("não") {
+		t.Fatal("confirmation parser incorrect")
+	}
+}
+
 func TestPasswordConfirmation(t *testing.T) {
 	t.Chdir(t.TempDir())
 	n := 0
