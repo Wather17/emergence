@@ -55,6 +55,7 @@ Depois de salvar suas notas e encerrar a edição:
 
 ```powershell
 emergence lock
+emergence rotate-password
 emergence status
 emergence doctor
 ```
@@ -91,7 +92,9 @@ Minha Vault/
 
 A criptografia usa [age](https://pkg.go.dev/filippo.io/age), com senha via scrypt nos parâmetros padrão da biblioteca. O arquivo pode ser descriptografado com ferramentas compatíveis com age; não há algoritmo próprio. A senha é lida no terminal sem eco e não é aceita em argumentos, registrada em logs nem salva em disco. O programa não promete eliminar todas as cópias da senha da memória do processo Go.
 
-Enquanto aberta, a pasta contém **arquivos normais**, acessíveis ao editor e a outros programas com suas permissões. O CLI não protege contra malware ou processos alterando ativamente o armazenamento. Use uma senha longa e exclusiva. Não há recuperação nem troca de senha nesta versão.
+Enquanto aberta, a pasta contém **arquivos normais**, acessíveis ao editor e a outros programas com suas permissões. O CLI não protege contra malware ou processos alterando ativamente o armazenamento. Use uma senha longa e exclusiva.
+
+Para trocar a senha, feche a pasta e execute `emergence rotate-password`. O comando pede a senha atual e a nova senha sem eco, reautentica todo o arquivo e publica a nova versão somente depois de validá-la. A operação é retomável: em caso de interrupção, preserve `.emergence/txn/` e repita o mesmo comando; nenhuma senha é gravada no diário ou em argumentos.
 
 No Linux, arquivos e pastas criados usam permissões restritas ao usuário. No Windows, o acesso também depende das ACLs herdadas da pasta da vault; o CLI não altera essas ACLs.
 
@@ -105,7 +108,7 @@ Mantenha backups de `.emergence/` **depois de um fechamento concluído**. Enquan
 
 ## Falhas e recuperação
 
-Durante uma operação, `.emergence/txn/` guarda o registro, temporários e, no fechamento, a versão criptografada anterior. O CLI só remove notas depois de gravar, fechar, reler e autenticar o novo arquivo. Duas instâncias nativas não operam na mesma vault ao mesmo tempo; a trava é liberada pelo sistema quando o processo termina.
+Durante uma operação, `.emergence/txn/` guarda o registro, temporários e, no fechamento ou na rotação de senha, a versão criptografada anterior. O CLI só remove notas depois de gravar, fechar, reler e autenticar o novo arquivo. Duas instâncias nativas não operam na mesma vault ao mesmo tempo; a trava é liberada pelo sistema quando o processo termina.
 
 Se um comando for interrompido:
 
@@ -121,7 +124,7 @@ Para recuperação manual, trabalhe exclusivamente nessa cópia:
 
 - `sealed.age`, quando presente, é a versão criptografada publicada.
 - `txn/previous.age`, quando presente, contém a versão anterior ao fechamento interrompido.
-- `txn/next.age`, quando presente e íntegro, contém a tentativa de novo fechamento. Pode estar incompleto; só use se a descriptografia terminar com sucesso.
+- `txn/next.age`, quando presente e íntegro, contém a tentativa de novo fechamento ou rotação. Pode estar incompleto; só use se a descriptografia terminar com sucesso.
 - A pasta aberta pode conter edições mais recentes que esses arquivos. Preserve-a e compare os conflitos manualmente.
 
 Com o [CLI age](https://github.com/FiloSottile/age) instalado separadamente, descriptografe cada candidato para um TAR diferente, usando um diretório de recuperação vazio fora da vault:
@@ -158,7 +161,7 @@ Validação manual de integração antes de usar notas reais:
 4. Execute `unlock`, reabra o Obsidian e confira nota e anexo.
 5. Repita com uma senha errada e confirme que não aparecem notas abertas.
 
-Fora desta versão: sincronização, criação da nota diária, bloqueio automático, múltiplas pastas, troca de senha e integração com chaveiro do sistema.
+Fora desta versão: sincronização, criação da nota diária, bloqueio automático, múltiplas pastas e integração com chaveiro do sistema.
 
 ## Publicar uma release
 

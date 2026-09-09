@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -239,6 +240,112 @@ func decrypt(path, password, destination string) ([]entry, error) {
 	}
 	if _, err := io.Copy(io.Discard, r); err != nil {
 		return nil, fmt.Errorf("falha de integridade: %w", err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return entries, nil
+}
+
+// reencrypt streams an authenticated TAR from one age password to another.
+// Plaintext is never written to disk: file contents pass directly from the
+// decrypted reader to the encrypted candidate while hashes are recomputed.
+func reencrypt(source, destination, oldPassword, newPassword string) (entries []entry, err error) {
+	in, err := os.Open(source)
+	if err != nil {
+		return nil, err
+	}
+	defer in.Close()
+	identity, err := age.NewScryptIdentity(oldPassword)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := age.Decrypt(in, identity)
+	if err != nil {
+		return nil, fmt.Errorf("senha incorreta ou arquivo criptografado inválido: %w", err)
+	}
+	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := out.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+	recipient, err := newRecipient(newPassword)
+	if err != nil {
+		return nil, err
+	}
+	writer, err := age.Encrypt(out, recipient)
+	if err != nil {
+		return nil, err
+	}
+	tarWriter := tar.NewWriter(writer)
+	seen := map[string]bool{}
+	tr := tar.NewReader(reader)
+	for {
+		header, nextErr := tr.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return nil, nextErr
+		}
+		if err := safePath(header.Name); err != nil {
+			return nil, err
+		}
+		key := strings.ToLower(header.Name)
+		if seen[key] {
+			return nil, fmt.Errorf("entrada duplicada: %s", header.Name)
+		}
+		seen[key] = true
+		e := entry{Name: header.Name}
+		outputHeader := &tar.Header{Name: header.Name, Mode: 0600, Size: header.Size, Typeflag: tar.TypeReg}
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if header.Size != 0 {
+				return nil, errors.New("diretório com conteúdo inválido")
+			}
+			e.Dir = true
+			outputHeader.Mode = 0700
+			outputHeader.Size = 0
+			outputHeader.Typeflag = tar.TypeDir
+		case tar.TypeReg:
+			if header.Size < 0 {
+				return nil, fmt.Errorf("tamanho inválido: %s", header.Name)
+			}
+			e.Size = header.Size
+		default:
+			return nil, fmt.Errorf("tipo de arquivo não permitido: %s", header.Name)
+		}
+		if err := tarWriter.WriteHeader(outputHeader); err != nil {
+			return nil, err
+		}
+		if e.Dir {
+			entries = append(entries, e)
+			continue
+		}
+		hash := sha256.New()
+		n, copyErr := io.Copy(io.MultiWriter(tarWriter, hash), tr)
+		if copyErr != nil {
+			return nil, copyErr
+		}
+		if n != e.Size {
+			return nil, fmt.Errorf("arquivo incompleto: %s", e.Name)
+		}
+		e.Hash = hex.EncodeToString(hash.Sum(nil))
+		entries = append(entries, e)
+	}
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return nil, fmt.Errorf("falha de integridade: %w", err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	if err := out.Sync(); err != nil {
+		return nil, err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries, nil
