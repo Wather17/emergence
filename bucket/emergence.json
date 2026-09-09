@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "description": "Encrypted private notes for a local Obsidian vault.",
   "homepage": "https://github.com/Wather17/emergence",
-  "license": "Unknown",
+  "license": "MIT",
   "architecture": {
     "64bit": {
       "url": "https://github.com/Wather17/emergence/releases/download/v0.1.0/emergence_0.1.0_windows_amd64.zip",
