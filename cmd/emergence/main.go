@@ -21,11 +21,14 @@ Uso:
   emergence unlock
   emergence lock
   emergence status
+  emergence destroy
   emergence version
   emergence help
 
 Execute init na raiz da vault. Os demais comandos também funcionam em subpastas.
 Encerre a edição antes de lock. A senha é solicitada no terminal, sem exibição.
+destroy exige um terminal interativo, valida a senha e a frase literal
+DESTROY <nome-da-pasta-privada> antes de remover a pasta privada e .emergence.
 `
 
 func password(prompt string) (string, error) {
@@ -60,7 +63,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return nil
 	}
 	command := args[0]
-	if command != "init" && command != "unlock" && command != "lock" && command != "status" {
+	if command != "init" && command != "unlock" && command != "lock" && command != "status" && command != "destroy" {
 		return fmt.Errorf("comando desconhecido: %s; use emergence help", command)
 	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -81,6 +84,9 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
+	}
+	if command == "destroy" && !term.IsTerminal(int(os.Stdin.Fd())) {
+		return errors.New("destroy exige um terminal interativo")
 	}
 	if command == "init" {
 		p, err := ask("Crie uma senha: ")
@@ -105,6 +111,36 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return err
 	}
 	defer v.Close()
+	if command == "destroy" {
+		if err := v.ValidateDestroyCwd(cwd); err != nil {
+			return err
+		}
+		targets, err := v.DestroyTargets()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "A destruição removerá irreversivelmente:")
+		for _, target := range targets {
+			fmt.Fprintf(out, "  %s\n", target)
+		}
+		p, err := ask("Senha: ")
+		if err != nil {
+			return err
+		}
+		phrase, err := ask("Digite a frase de confirmação: ")
+		if err != nil {
+			return err
+		}
+		expected := "DESTROY " + v.Folder
+		if phrase != expected {
+			return errors.New("frase de confirmação incorreta; destruição cancelada")
+		}
+		if err := v.Destroy(p); err != nil {
+			return err
+		}
+		fmt.Fprintln(out, "Destruição concluída. A ação é irreversível para o Emergence; cópias externas não foram removidas.")
+		return nil
+	}
 	if command == "status" {
 		status, err := v.Status()
 		if err != nil {

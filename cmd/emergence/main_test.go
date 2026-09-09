@@ -16,10 +16,21 @@ func TestUsageAndValidation(t *testing.T) {
 			t.Fatal("missing help")
 		}
 	}
-	for _, args := range [][]string{{"unknown"}, {"lock", "extra"}, {"unlock", "--password", "secret"}, {"init", "--bad"}} {
+	for _, args := range [][]string{{"unknown"}, {"lock", "extra"}, {"unlock", "--password", "secret"}, {"destroy", "--force"}, {"init", "--bad"}} {
 		if err := run(args, &bytes.Buffer{}, func(string) (string, error) { t.Fatal("unexpected password prompt"); return "", nil }); err == nil {
 			t.Fatal("invalid arguments accepted")
 		}
+	}
+}
+
+func TestDestroyRequiresInteractiveTerminal(t *testing.T) {
+	t.Chdir(t.TempDir())
+	err := run([]string{"destroy"}, &bytes.Buffer{}, func(string) (string, error) {
+		t.Fatal("destroy requested input without a terminal")
+		return "", nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "terminal interativo") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
