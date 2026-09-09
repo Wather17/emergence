@@ -295,6 +295,30 @@ func TestSafePathReservesEmergenceComponent(t *testing.T) {
 	}
 }
 
+func TestStatusRejectsNonRegularSealedArchive(t *testing.T) {
+	v := fixture(t)
+	sealed := v.meta("sealed.age")
+	backup := sealed + ".backup"
+	must(t, os.Rename(sealed, backup))
+	must(t, os.Mkdir(sealed, 0700))
+	if _, err := v.Status(); err == nil {
+		t.Fatal("status accepted a directory as sealed.age")
+	}
+	must(t, os.Remove(sealed))
+	must(t, os.Rename(backup, sealed))
+	if status, err := v.Status(); err != nil || status != "trancada" {
+		t.Fatalf("valid sealed archive rejected: %s %v", status, err)
+	}
+}
+
+func TestStatusRejectsMissingSealedArchive(t *testing.T) {
+	v := fixture(t)
+	must(t, os.Remove(v.meta("sealed.age")))
+	if _, err := v.Status(); err == nil {
+		t.Fatal("status accepted missing sealed.age")
+	}
+}
+
 func TestInitRejectsExistingFolder(t *testing.T) {
 	root := t.TempDir()
 	must(t, os.Mkdir(filepath.Join(root, "Morning Pages"), 0700))

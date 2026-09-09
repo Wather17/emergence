@@ -676,8 +676,19 @@ func (v *Vault) Status() (string, error) {
 	if exists(v.meta("txn")) || exists(v.meta("cleanup")) || exists(v.meta("prepare")) {
 		return "incompleta — pode haver conteúdo aberto; repita o último comando", nil
 	}
-	if _, err := plain(v.meta("sealed.age")); err != nil {
+	sealed, err := plain(v.meta("sealed.age"))
+	if err != nil {
 		return "", err
+	}
+	if !sealed.Mode().IsRegular() {
+		return "", errors.New("arquivo criptografado inválido: sealed.age não é um arquivo regular")
+	}
+	f, err := os.Open(v.meta("sealed.age"))
+	if err != nil {
+		return "", fmt.Errorf("arquivo criptografado ilegível: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("arquivo criptografado ilegível: %w", err)
 	}
 	if exists(v.notes()) {
 		i, err := plain(v.notes())
