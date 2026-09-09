@@ -56,6 +56,7 @@ Depois de salvar suas notas e encerrar a edição:
 ```powershell
 emergence lock
 emergence rotate-password
+emergence today
 emergence backup --output "C:\\Backups\\morning-pages.age"
 emergence restore --input "C:\\Backups\\morning-pages.age"
 emergence status
@@ -99,6 +100,8 @@ Enquanto aberta, a pasta contém **arquivos normais**, acessíveis ao editor e a
 Para trocar a senha, feche a pasta e execute `emergence rotate-password`. O comando pede a senha atual e a nova senha sem eco, reautentica todo o arquivo e publica a nova versão somente depois de validá-la. A operação é retomável: em caso de interrupção, preserve `.emergence/txn/` e repita o mesmo comando; nenhuma senha é gravada no diário ou em argumentos.
 
 Para transportar ou recuperar uma vault trancada, use `emergence backup --output <arquivo>` e, em uma pasta de destino ainda não inicializada, `emergence restore --input <arquivo>`. O bundle é um TAR criptografado e versionado que contém apenas `config.json`, `sealed.age` e, quando existir, a quarentena criptografada. O backup recusa vault aberta, transações incompletas e destinos existentes; o restore valida tudo em staging privado, não sobrescreve arquivos comuns da raiz e deixa a vault restaurada trancada. A senha do bundle é a senha atual da vault.
+
+Com a pasta privada aberta, `emergence today` cria um arquivo Markdown vazio `YYYY-MM-DD.md` na raiz dela usando a data local do sistema. A criação é exclusiva e não substitui uma nota existente, mesmo que o nome só difira por maiúsculas/minúsculas.
 
 No Linux, arquivos e pastas criados usam permissões restritas ao usuário. No Windows, o acesso também depende das ACLs herdadas da pasta da vault; o CLI não altera essas ACLs.
 
@@ -165,7 +168,7 @@ Validação manual de integração antes de usar notas reais:
 4. Execute `unlock`, reabra o Obsidian e confira nota e anexo.
 5. Repita com uma senha errada e confirme que não aparecem notas abertas.
 
-Fora desta versão: sincronização, criação da nota diária, bloqueio automático, múltiplas pastas e integração com chaveiro do sistema.
+Fora desta versão: sincronização, bloqueio automático, múltiplas pastas e integração com chaveiro do sistema.
 
 ## Publicar uma release
 
