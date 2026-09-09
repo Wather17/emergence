@@ -28,7 +28,7 @@ Uso:
   emergence status
   emergence doctor [--check-archive]
   emergence inbox
-  emergence review
+  emergence review [--dry-run]
   emergence destroy
   emergence version
   emergence help
@@ -116,6 +116,7 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		fs.StringVar(&folder, "folder", folder, "nome da pasta privada")
 	}
 	checkArchive := false
+	dryRun := false
 	output := ""
 	input := ""
 	if command == "doctor" {
@@ -126,6 +127,9 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	}
 	if command == "restore" {
 		fs.StringVar(&input, "input", "", "arquivo de backup criptografado")
+	}
+	if command == "review" {
+		fs.BoolVar(&dryRun, "dry-run", false, "mostrar o plano sem alterar arquivos")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -292,6 +296,9 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	}
 	if command == "review" {
 		if v.ReviewInProgress() {
+			if dryRun {
+				return errors.New("há uma revisão incompleta; dry-run não pode retomar uma transação")
+			}
 			fmt.Fprintln(out, "Retomando revisão incompleta...")
 			if err := v.Review(nil); err != nil {
 				return err
@@ -321,6 +328,22 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		}
 		if canceled {
 			fmt.Fprintln(out, "Revisão cancelada.")
+			return nil
+		}
+		if dryRun {
+			plan, err := v.ReviewPlan(selected)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(out, "Plano da revisão (dry-run):")
+			for _, item := range plan {
+				if item.Action == "delete" {
+					fmt.Fprintf(out, "  apagar %s (%d bytes, sha256 %s)\n", item.Name, item.Size, item.Hash)
+				} else {
+					fmt.Fprintf(out, "  mover %s -> %s (%d bytes, sha256 %s)\n", item.Name, item.Destination, item.Size, item.Hash)
+				}
+			}
+			fmt.Fprintln(out, "Nenhum arquivo foi alterado.")
 			return nil
 		}
 		if len(selected) > 0 {

@@ -761,6 +761,28 @@ func TestReviewDeletesAndMovesMarkdown(t *testing.T) {
 	}
 }
 
+func TestReviewPlanDoesNotMutate(t *testing.T) {
+	root := t.TempDir()
+	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
+	must(t, Init(root, "Morning Pages", testPassword))
+	v, err := Open(root)
+	must(t, err)
+	defer v.Close()
+	must(t, v.Unlock(testPassword))
+	put(t, filepath.Join(v.notes(), "keep.md"), []byte("keep"))
+	put(t, filepath.Join(v.notes(), "delete.md"), []byte("delete"))
+	beforeKeep := read(t, filepath.Join(v.notes(), "keep.md"))
+	beforeDelete := read(t, filepath.Join(v.notes(), "delete.md"))
+	plan, err := v.ReviewPlan([]string{"delete.md"})
+	must(t, err)
+	if len(plan) != 2 || plan[0].Action != "delete" || plan[1].Action != "move" {
+		t.Fatalf("unexpected dry-run plan: %#v", plan)
+	}
+	if exists(v.meta("txn")) || exists(filepath.Join(root, "Inbox", "keep.md")) || !bytes.Equal(beforeKeep, read(t, filepath.Join(v.notes(), "keep.md"))) || !bytes.Equal(beforeDelete, read(t, filepath.Join(v.notes(), "delete.md"))) {
+		t.Fatal("dry-run changed vault state")
+	}
+}
+
 func TestReviewCollisionsPreserveNotes(t *testing.T) {
 	root := t.TempDir()
 	must(t, os.Mkdir(filepath.Join(root, "Inbox"), 0700))
