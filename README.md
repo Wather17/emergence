@@ -70,6 +70,8 @@ Os comandos são iguais no Linux. `unlock`, `lock` e `status` também encontram 
 
 Uma pasta privada por vault. A pasta inicial deve ser nova; para adicionar notas existentes, desbloqueie e mova-as manualmente para ela. Arquivos comuns, anexos e subpastas vazias são preservados. Links, arquivos especiais e nomes incompatíveis com Windows são recusados. As permissões e datas originais dos arquivos não são preservadas.
 
+`.emergence` é um nome reservado em qualquer componente de caminho dentro da pasta privada. Não crie essa pasta nas notas: além de evitar ambiguidade na descoberta da vault, a regra é aplicada de forma portátil entre Linux e Windows.
+
 Para o uso rotineiro no Windows, prefira `emergence.exe` no PowerShell. O WSL serve para desenvolvimento; acesso simultâneo pelos dois sistemas ao mesmo armazenamento não é suportado.
 
 ## Armazenamento e segurança

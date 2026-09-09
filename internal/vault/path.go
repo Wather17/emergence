@@ -16,6 +16,9 @@ func safePath(name string) error {
 		if part == "" || part == "." || part == ".." || strings.TrimRight(part, " .") != part || strings.ContainsAny(part, "<>\"|?*") {
 			return fmt.Errorf("nome não portátil: %q", name)
 		}
+		if strings.EqualFold(part, ".emergence") {
+			return fmt.Errorf("nome reservado pelo Emergence: %q", name)
+		}
 		for _, r := range part {
 			if r < 32 {
 				return fmt.Errorf("nome não portátil: %q", name)
