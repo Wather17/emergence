@@ -130,6 +130,46 @@ func FindInboxCandidates(root, privateFolder string) ([]string, error) {
 	return candidates, nil
 }
 
+func metadataCandidate(path string) error {
+	info, err := plain(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New(".emergence não é uma pasta")
+	}
+	b, err := os.ReadFile(filepath.Join(path, "config.json"))
+	if err != nil {
+		return err
+	}
+	var c config
+	if err := json.Unmarshal(b, &c); err != nil {
+		return err
+	}
+	if c.Version != 1 {
+		return errors.New("versão de armazenamento não suportada")
+	}
+	if err := validFolder(c.Folder); err != nil {
+		return err
+	}
+	if err := validInbox(c.Inbox); err != nil {
+		return err
+	}
+	sealed, err := plain(filepath.Join(path, "sealed.age"))
+	if err != nil {
+		// A lock transaction may temporarily move sealed.age to txn/previous.age;
+		// Open must still be able to acquire the guard and resume recovery.
+		if os.IsNotExist(err) && exists(filepath.Join(path, "txn")) {
+			return nil
+		}
+		return err
+	}
+	if !sealed.Mode().IsRegular() {
+		return errors.New("sealed.age não é um arquivo regular")
+	}
+	return nil
+}
+
 func writeNew(path string, data []byte) (err error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
@@ -228,13 +268,32 @@ func Open(start string) (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	for !exists(filepath.Join(root, metadata)) {
+	var invalid error
+	var found string
+	for {
+		candidate := filepath.Join(root, metadata)
+		if exists(candidate) {
+			candidateErr := metadataCandidate(candidate)
+			if candidateErr == nil {
+				found = root
+			}
+			if candidateErr != nil && invalid == nil {
+				invalid = fmt.Errorf("configuração inválida em %s: %w", candidate, candidateErr)
+			}
+		}
 		parent := filepath.Dir(root)
 		if parent == root {
-			return nil, errors.New("vault não inicializada; execute emergence init na raiz da vault")
+			break
 		}
 		root = parent
 	}
+	if found == "" {
+		if invalid != nil {
+			return nil, invalid
+		}
+		return nil, errors.New("vault não inicializada; execute emergence init na raiz da vault")
+	}
+	root = found
 	m := filepath.Join(root, metadata)
 	if err := validateTree(m); err != nil {
 		return nil, err

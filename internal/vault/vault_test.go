@@ -271,6 +271,30 @@ func TestConflictsAndDiscovery(t *testing.T) {
 	}
 }
 
+func TestDiscoveryIgnoresNestedEmergenceDirectories(t *testing.T) {
+	v := fixture(t)
+	must(t, v.Unlock(testPassword))
+	nested := filepath.Join(v.notes(), "project", ".emergence")
+	must(t, os.MkdirAll(nested, 0700))
+	subfolder := filepath.Join(nested, "subfolder")
+	must(t, os.Mkdir(subfolder, 0700))
+	must(t, v.Close())
+	reopened, err := Open(subfolder)
+	must(t, err)
+	defer reopened.Close()
+	if reopened.Root != v.Root {
+		t.Fatalf("nested .emergence shadowed vault: got %s, want %s", reopened.Root, v.Root)
+	}
+}
+
+func TestSafePathReservesEmergenceComponent(t *testing.T) {
+	for _, name := range []string{".emergence", "notes/.emergence/file.md", "NOTES/.EMERGENCE"} {
+		if err := safePath(name); err == nil {
+			t.Fatalf("reserved path accepted: %s", name)
+		}
+	}
+}
+
 func TestInitRejectsExistingFolder(t *testing.T) {
 	root := t.TempDir()
 	must(t, os.Mkdir(filepath.Join(root, "Morning Pages"), 0700))
