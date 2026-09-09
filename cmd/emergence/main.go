@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -40,6 +41,46 @@ Encerre a edição antes de lock. A senha é solicitada no terminal, sem exibiç
 destroy exige um terminal interativo, valida a senha e a frase literal
 DESTROY <nome-da-pasta-privada> antes de remover a pasta privada e .emergence.
 `
+
+type statusJSON struct {
+	SchemaVersion int    `json:"schema_version"`
+	Command       string `json:"command"`
+	Root          string `json:"root"`
+	Folder        string `json:"folder"`
+	Inbox         string `json:"inbox"`
+	State         string `json:"state"`
+}
+
+type inboxJSON struct {
+	SchemaVersion int      `json:"schema_version"`
+	Command       string   `json:"command"`
+	Candidates    []string `json:"candidates"`
+	Selected      string   `json:"selected"`
+}
+
+type doctorJSON struct {
+	SchemaVersion int                `json:"schema_version"`
+	Command       string             `json:"command"`
+	Root          string             `json:"root"`
+	OK            bool               `json:"ok"`
+	Checks        []vault.Diagnostic `json:"checks"`
+}
+
+type reviewJSON struct {
+	SchemaVersion int                     `json:"schema_version"`
+	Command       string                  `json:"command"`
+	Entries       []vault.ReviewPlanEntry `json:"entries"`
+}
+
+func writeDocument(out io.Writer, value any) error {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	_, err = out.Write(b)
+	return err
+}
 
 func password(prompt string) (string, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -159,8 +200,16 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "today" && command != "backup" && command != "restore" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "destroy" {
 		return fmt.Errorf("comando desconhecido: %s; use emergence help", command)
 	}
+	jsonOutput := hasFlag(args[1:], "--json")
+	if jsonOutput && command != "status" && command != "doctor" && command != "inbox" && command != "review" {
+		return errors.New("--json só está disponível para status, doctor, inbox e review --dry-run")
+	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
-	fs.SetOutput(out)
+	if jsonOutput {
+		fs.SetOutput(io.Discard)
+	} else {
+		fs.SetOutput(out)
+	}
 	folder := "Morning Pages"
 	if command == "init" {
 		fs.StringVar(&folder, "folder", folder, "nome da pasta privada")
@@ -191,6 +240,12 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		fs.Int64Var(&maxSize, "max-size", -1, "tamanho máximo em bytes")
 		fs.StringVar(&pathPrefix, "path", "", "prefixo de subpasta relativo")
 	}
+	if command == "status" || command == "doctor" || command == "inbox" {
+		fs.BoolVar(&jsonOutput, "json", false, "emitir saída JSON versão 1")
+	}
+	if command == "review" {
+		fs.BoolVar(&jsonOutput, "json", false, "emitir saída JSON versão 1")
+	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -202,6 +257,9 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 	}
 	reviewFilter := vault.ReviewFilter{}
 	if command == "review" {
+		if jsonOutput && !dryRun {
+			return errors.New("review --json exige --dry-run")
+		}
 		var filterErr error
 		reviewFilter, filterErr = parseReviewFilter(before, after, minSize, maxSize, hasFlag(args[1:], "--min-size"), hasFlag(args[1:], "--max-size"), pathPrefix)
 		if filterErr != nil {
@@ -258,6 +316,16 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		report, err := vault.Doctor(cwd, checkArchive, p)
 		if err != nil {
 			return err
+		}
+		if jsonOutput {
+			err := writeDocument(out, doctorJSON{SchemaVersion: 1, Command: "doctor", Root: report.Root, OK: !report.HasErrors(), Checks: report.Checks})
+			if err != nil {
+				return err
+			}
+			if report.HasErrors() {
+				return errors.New("doctor encontrou problemas que exigem intervenção")
+			}
+			return nil
 		}
 		fmt.Fprintf(out, "Diagnóstico da vault: %s\n", report.Root)
 		for _, check := range report.Checks {
@@ -344,6 +412,12 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		if err != nil {
 			return err
 		}
+		if jsonOutput {
+			if candidates == nil {
+				candidates = []string{}
+			}
+			return writeDocument(out, inboxJSON{SchemaVersion: 1, Command: "inbox", Candidates: candidates, Selected: v.InboxPath()})
+		}
 		if len(candidates) == 0 {
 			fmt.Fprintln(out, "Nenhuma pasta Inbox encontrada na vault.")
 			return nil
@@ -391,12 +465,19 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 			notes = append(notes, note.Name)
 		}
 		if len(notes) == 0 {
+			if jsonOutput {
+				return writeDocument(out, reviewJSON{SchemaVersion: 1, Command: "review", Entries: []vault.ReviewPlanEntry{}})
+			}
 			fmt.Fprintln(out, "Nenhuma nota Markdown na pasta privada.")
 			return nil
 		}
-		fmt.Fprintln(out, "Notas Markdown:")
+		reviewOut := out
+		if jsonOutput {
+			reviewOut = os.Stderr
+		}
+		fmt.Fprintln(reviewOut, "Notas Markdown:")
 		for i, note := range notes {
-			fmt.Fprintf(out, "  %d) %s (%d bytes, modificação %s)\n", i+1, note, noteInfo[i].Size, noteInfo[i].ModTime.Format("2006-01-02 15:04:05 -07:00"))
+			fmt.Fprintf(reviewOut, "  %d) %s (%d bytes, modificação %s)\n", i+1, note, noteInfo[i].Size, noteInfo[i].ModTime.Format("2006-01-02 15:04:05 -07:00"))
 		}
 		answer, err := ask("Números para apagar (vazio mantém todas; cancelar aborta): ")
 		if err != nil {
@@ -414,6 +495,9 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 			plan, err := v.ReviewPlanWithFilter(selected, reviewFilter)
 			if err != nil {
 				return err
+			}
+			if jsonOutput {
+				return writeDocument(out, reviewJSON{SchemaVersion: 1, Command: "review", Entries: plan})
 			}
 			fmt.Fprintln(out, "Plano da revisão (dry-run):")
 			for _, item := range plan {
@@ -480,6 +564,13 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		status, err := v.Status()
 		if err != nil {
 			return err
+		}
+		if jsonOutput {
+			state := status
+			if strings.HasPrefix(state, "incompleta") {
+				state = "incompleta"
+			}
+			return writeDocument(out, statusJSON{SchemaVersion: 1, Command: "status", Root: v.Root, Folder: v.Folder, Inbox: v.InboxPath(), State: state})
 		}
 		fmt.Fprintf(out, "%s: %s\n", v.Folder, status)
 		return nil

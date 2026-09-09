@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,5 +222,118 @@ func TestTodayCommandDoesNotPrompt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Nota diária criada:") {
 		t.Fatalf("unexpected today output: %s", out.String())
+	}
+}
+
+func TestReadOnlyCommandsJSONSchema(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "Inbox"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Init(root, "Morning Pages", "json password"); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	var statusOut bytes.Buffer
+	if err := run([]string{"status", "--json"}, &statusOut, func(string) (string, error) {
+		t.Fatal("status requested a password")
+		return "", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var status map[string]any
+	if err := json.Unmarshal(statusOut.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status["schema_version"] != float64(1) || status["command"] != "status" || status["state"] != "trancada" {
+		t.Fatalf("unexpected status schema: %#v", status)
+	}
+	var inboxOut bytes.Buffer
+	if err := run([]string{"inbox", "--json"}, &inboxOut, func(string) (string, error) {
+		t.Fatal("inbox --json requested a selection")
+		return "", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var inbox map[string]any
+	if err := json.Unmarshal(inboxOut.Bytes(), &inbox); err != nil {
+		t.Fatal(err)
+	}
+	if inbox["schema_version"] != float64(1) || inbox["command"] != "inbox" || inbox["selected"] != "Inbox" {
+		t.Fatalf("unexpected inbox schema: %#v", inbox)
+	}
+	var doctorOut bytes.Buffer
+	if err := run([]string{"doctor", "--json"}, &doctorOut, func(string) (string, error) {
+		t.Fatal("doctor requested a password without --check-archive")
+		return "", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var doctor map[string]any
+	if err := json.Unmarshal(doctorOut.Bytes(), &doctor); err != nil {
+		t.Fatal(err)
+	}
+	if doctor["schema_version"] != float64(1) || doctor["command"] != "doctor" || doctor["ok"] != true {
+		t.Fatalf("unexpected doctor schema: %#v", doctor)
+	}
+}
+
+func TestReviewDryRunJSONIsPurePlan(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "Inbox"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.Init(root, "Morning Pages", "json review password"); err != nil {
+		t.Fatal(err)
+	}
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Unlock("json review password"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Morning Pages", "keep.md"), []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	var out bytes.Buffer
+	if err := run([]string{"review", "--dry-run", "--json"}, &out, func(string) (string, error) {
+		return "", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		SchemaVersion int                     `json:"schema_version"`
+		Command       string                  `json:"command"`
+		Entries       []vault.ReviewPlanEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &document); err != nil {
+		t.Fatalf("invalid JSON output %q: %v", out.String(), err)
+	}
+	if document.SchemaVersion != 1 || document.Command != "review" || len(document.Entries) != 1 || document.Entries[0].Action != "move" {
+		t.Fatalf("unexpected review JSON: %#v", document)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Morning Pages", "keep.md")); err != nil {
+		t.Fatal("review dry-run changed the note")
+	}
+}
+
+func TestJSONRejectedForMutatingCommandsAndErrorsStayEmpty(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, args := range [][]string{{"init", "--json"}, {"unlock", "--json"}, {"review", "--json"}} {
+		if err := run(args, &bytes.Buffer{}, func(string) (string, error) { t.Fatal("unexpected prompt"); return "", nil }); err == nil {
+			t.Fatalf("%v accepted --json", args)
+		}
+	}
+	var out bytes.Buffer
+	if err := run([]string{"status", "--json"}, &out, func(string) (string, error) { t.Fatal("unexpected prompt"); return "", nil }); err == nil {
+		t.Fatal("status without vault succeeded")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("failed JSON command wrote partial output: %q", out.String())
 	}
 }
