@@ -85,6 +85,18 @@ Para revisar um subconjunto, combine `--before YYYY-MM-DD` (limite exclusivo), `
 
 Os comandos somente leitura aceitam saída para automação: `status --json`, `inbox --json`, `doctor --json` e `review --dry-run --json`. Cada um escreve um único documento com `schema_version: 1` em stdout; prompts continuam em stderr e nenhum conteúdo de nota ou senha é incluído. O schema mantém os campos existentes ao evoluir. Comandos mutáveis recusam `--json`.
 
+Para habilitar completions sem alterar automaticamente nenhum perfil, gere o script e carregue-o no shell:
+
+```sh
+# Bash (sessão atual)
+source <(emergence completion bash)
+
+# Zsh (sessão atual)
+source <(emergence completion zsh)
+```
+
+No PowerShell, carregue na sessão atual com `Invoke-Expression (emergence completion powershell | Out-String)`. Para persistir, salve a saída em um arquivo sob seu controle e adicione o comando `source` (Bash/Zsh) ou `Invoke-Expression (Get-Content ... -Raw)` ao perfil. `completion` é estático, não abre a vault e não inspeciona notas, Inbox ou senhas.
+
 Para eliminar definitivamente todos os dados administrados pelo Emergence, use `emergence destroy` a partir da raiz ou de uma subpasta normal da vault. O comando só funciona em um terminal interativo: mostra os caminhos exatos, pede a senha sem eco e exige a frase sensível a maiúsculas `DESTROY <nome-da-pasta-privada>`. A confirmação valida a senha e todos os alvos antes de remover recursivamente a pasta privada (inclusive anexos e arquivos não Markdown) e `.emergence/`. Não há `--force`, senha por argumento ou entrada redirecionada. Nunca execute o comando de dentro da pasta privada ou de `.emergence`.
 
 Os comandos são iguais no Linux. `unlock`, `lock` e `status` também encontram a configuração quando executados em subpastas da vault. Execute o fechamento de uma pasta que continuará existindo, como a raiz da vault.

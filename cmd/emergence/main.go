@@ -32,6 +32,7 @@ Uso:
   emergence doctor [--check-archive]
   emergence inbox
   emergence review [--dry-run]
+  emergence completion <bash|zsh|powershell>
   emergence trash list
   emergence trash restore <id>
   emergence trash empty
@@ -200,8 +201,19 @@ func run(args []string, out io.Writer, ask func(string) (string, error)) error {
 		return nil
 	}
 	command := args[0]
-	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "today" && command != "backup" && command != "restore" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "trash" && command != "destroy" {
+	if command != "init" && command != "unlock" && command != "lock" && command != "rotate-password" && command != "today" && command != "backup" && command != "restore" && command != "status" && command != "doctor" && command != "inbox" && command != "review" && command != "completion" && command != "trash" && command != "destroy" {
 		return fmt.Errorf("comando desconhecido: %s; use emergence help", command)
+	}
+	if command == "completion" {
+		if len(args) != 2 || args[1] == "" {
+			return errors.New("use emergence completion <bash|zsh|powershell>")
+		}
+		script, err := completionScript(args[1])
+		if err != nil {
+			return err
+		}
+		_, err = io.WriteString(out, script)
+		return err
 	}
 	jsonOutput := hasFlag(args[1:], "--json")
 	if jsonOutput && command != "status" && command != "doctor" && command != "inbox" && command != "review" {
