@@ -56,6 +56,8 @@ Depois de salvar suas notas e encerrar a edição:
 ```powershell
 emergence lock
 emergence rotate-password
+emergence backup --output "C:\\Backups\\morning-pages.age"
+emergence restore --input "C:\\Backups\\morning-pages.age"
 emergence status
 emergence doctor
 ```
@@ -96,6 +98,8 @@ Enquanto aberta, a pasta contém **arquivos normais**, acessíveis ao editor e a
 
 Para trocar a senha, feche a pasta e execute `emergence rotate-password`. O comando pede a senha atual e a nova senha sem eco, reautentica todo o arquivo e publica a nova versão somente depois de validá-la. A operação é retomável: em caso de interrupção, preserve `.emergence/txn/` e repita o mesmo comando; nenhuma senha é gravada no diário ou em argumentos.
 
+Para transportar ou recuperar uma vault trancada, use `emergence backup --output <arquivo>` e, em uma pasta de destino ainda não inicializada, `emergence restore --input <arquivo>`. O bundle é um TAR criptografado e versionado que contém apenas `config.json`, `sealed.age` e, quando existir, a quarentena criptografada. O backup recusa vault aberta, transações incompletas e destinos existentes; o restore valida tudo em staging privado, não sobrescreve arquivos comuns da raiz e deixa a vault restaurada trancada. A senha do bundle é a senha atual da vault.
+
 No Linux, arquivos e pastas criados usam permissões restritas ao usuário. No Windows, o acesso também depende das ACLs herdadas da pasta da vault; o CLI não altera essas ACLs.
 
 Trancar remove as cópias abertas, mas **não garante apagamento físico**, nem remove cópias do Obsidian, plugins, histórico, lixeira, backups ou indexadores. Configure essas ferramentas conforme sua necessidade. Não use sync/Git para essa pasta sem considerar que podem registrar as notas enquanto abertas. Mesmo trancado, o nome da pasta privada e o tamanho do arquivo criptografado ficam visíveis.
@@ -104,7 +108,7 @@ Trancar remove as cópias abertas, mas **não garante apagamento físico**, nem 
 
 Antes de `lock`, salve e feche a edição das notas; fechar o Obsidian é a opção mais previsível. O CLI verifica alterações e recusa remover arquivos divergentes, mas não consegue impedir que outro programa escreva entre a verificação e a remoção ou recrie a pasta depois. Não edite durante a operação.
 
-Mantenha backups de `.emergence/` **depois de um fechamento concluído**. Enquanto a pasta está aberta, `sealed.age` ainda contém a versão do último fechamento, sem as edições recentes.
+Mantenha bundles criados por `emergence backup` **depois de um fechamento concluído**. Enquanto a pasta está aberta, `sealed.age` ainda contém a versão do último fechamento, sem as edições recentes. O bundle é criptografado com a senha atual; não há recuperação se ela for esquecida.
 
 ## Falhas e recuperação
 
