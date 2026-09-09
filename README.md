@@ -158,6 +158,8 @@ Os testes cobrem ciclos completos, pasta vazia, anexos, acentos, senha errada, t
 
 O cache local de issues é sincronizado por `scripts/sync-issues.sh`. Depois da primeira sincronização, `.emergence-issues-manifest` registra exatamente os arquivos gerenciados; Markdown que não estiver no manifesto nunca é removido. `ISSUES_DIR` pode apontar para outro diretório, desde que o caminho não seja um link. O teste isolado do sincronizador pode ser executado com `scripts/sync-issues-test.sh`.
 
+O repositório público mantém uma [política de segurança](SECURITY.md). Vulnerabilidades devem ser reportadas pelo canal privado de Security Advisories, nunca em issues públicas. Dependabot acompanha o módulo Go e as GitHub Actions semanalmente; o workflow CodeQL analisa Go em pull requests, pushes na `main` e semanalmente. Mantenha esses checks verdes ao atualizar dependências ou workflows.
+
 Há testes específicos de permissões no Linux (ignorados quando executados como root) e de arquivos abertos sem compartilhamento de exclusão no Windows. A CI executa testes com detector de corridas e compila em ambos os sistemas, disponibilizando os binários como artefatos. Compilar para Windows no Linux não substitui executar os testes no Windows.
 
 Validação manual de integração antes de usar notas reais:
