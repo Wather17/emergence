@@ -8,6 +8,8 @@ import (
 )
 
 // Use the same portable name rules on both systems so a vault can be moved.
+// Callers must validate archive-controlled names before joining them to a
+// filesystem destination.
 func safePath(name string) error {
 	if name == "" || strings.ContainsAny(name, "\\:\x00") || strings.HasPrefix(name, "/") {
 		return fmt.Errorf("caminho inválido: %q", name)
