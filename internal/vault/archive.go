@@ -179,6 +179,7 @@ func decrypt(path, password, destination string) ([]entry, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Validate the archive-controlled name before joining it to destination.
 		if err := safePath(h.Name); err != nil {
 			return nil, err
 		}

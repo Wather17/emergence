@@ -631,6 +631,31 @@ func TestRejectMaliciousArchives(t *testing.T) {
 	}
 }
 
+func TestDecryptRejectsTraversalBeforeWritingOutsideDestination(t *testing.T) {
+	for _, name := range []string{"../escape", "a/../../escape"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			archive := filepath.Join(root, "sealed.age")
+			destination := filepath.Join(root, "destination")
+			outside := filepath.Join(root, "escape")
+			must(t, os.Mkdir(destination, 0700))
+			maliciousArchive(t, archive, []*tar.Header{{Name: name, Typeflag: tar.TypeReg, Mode: 0600, Size: 7}})
+
+			if _, err := decrypt(archive, testPassword, destination); err == nil {
+				t.Fatal("path traversal was accepted")
+			}
+			if exists(outside) {
+				t.Fatal("archive entry escaped the destination")
+			}
+			entries, err := os.ReadDir(destination)
+			must(t, err)
+			if len(entries) != 0 {
+				t.Fatalf("destination was modified: %#v", entries)
+			}
+		})
+	}
+}
+
 func TestSymlinkRejected(t *testing.T) {
 	v := fixture(t)
 	must(t, v.Unlock(testPassword))
